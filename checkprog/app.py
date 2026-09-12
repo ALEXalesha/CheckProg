@@ -14,6 +14,11 @@ FILETYPES = [("Чек-листы", "*.json"), ("Все файлы", "*.*")]
 # Windows virtual-key codes do not depend on the keyboard layout, so Ctrl+S
 # keeps working when the Russian layout is active (keysym is then Cyrillic_*).
 WIN_KEYCODES = {78: "n", 79: "o", 83: "s"}
+# With a non-Latin layout Tk reports Ctrl+С as Cyrillic_es, which the Entry/Text
+# class bindings for <Control-c> never match, so editing shortcuts are re-sent
+# as virtual events.
+WIN_EDIT_KEYCODES = {65: "<<SelectAll>>", 67: "<<Copy>>", 86: "<<Paste>>", 88: "<<Cut>>",
+                     89: "<<Redo>>", 90: "<<Undo>>"}
 # Alt+Ф / Alt+П / Alt+В / Alt+С: physical keys A, G, D, C in the ЙЦУКЕН layout.
 WIN_ALT_KEYCODES = {65: "file", 71: "item", 68: "view", 67: "help"}
 # Tk on Windows reports Alt as 0x20000; 0x0008 there means NumLock.
@@ -21,12 +26,14 @@ ALT_MASK = 0x20000 if sys.platform == "win32" else 0x0008
 CONTROL_MASK = 0x0004
 ICON_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icon.ico")
 CHECK_COLUMN = "#0"
+NOTE_MARK = "✎"
 # Treeview item without the expand/collapse indicator, which would leave a gap
-# before the checkbox. Layouts belong to a ttk theme, so this is reapplied on switch.
+# before the checkbox, and without Treeitem.focus, which drew a dotted frame
+# between the checkbox and the text. Layouts belong to a ttk theme, so this is
+# reapplied on switch.
 ITEM_LAYOUT = [("Treeitem.padding", {"sticky": "nswe", "children": [
     ("Treeitem.image", {"side": "left", "sticky": ""}),
-    ("Treeitem.focus", {"side": "left", "sticky": "", "children": [
-        ("Treeitem.text", {"side": "left", "sticky": ""})]})]})]
+    ("Treeitem.text", {"side": "left", "sticky": ""})]})]
 
 
 def _stamp_line(img, start, end, width, color):
@@ -68,6 +75,12 @@ class App:
         self.checklist = Checklist()
         self.editor = None
         self._drag = None
+        self._click_toggle = False
+        # The note panel belongs to one Item object, not to a row number: after a
+        # delete another item sits on the same row.
+        self.note_index = None
+        self._note_item = None
+        self._palette = None
         self.theme_mode = theme.normalize_mode(self.settings.get("theme"))
         self.theme = None
         self.theme_var = tk.StringVar(master=root, value=self.theme_mode)
@@ -127,20 +140,41 @@ class App:
         self.hint = ttk.Label(
             bottom,
             text="Щелчок по квадратику: отметить  •  двойной щелчок: изменить  •  "
+                 "повторный щелчок или Esc: снять выделение  •  "
                  "Delete: удалить  •  перетащите строку, чтобы переставить")
         self.hint.pack(fill="x", pady=(6, 0))
         self.hint.bind("<Configure>",
                        lambda e: self.hint.configure(wraplength=max(e.width, 50)))
 
+        # Packed after `bottom` with side="bottom", so it sits right above it.
+        note_panel = ttk.Frame(root, padding=(10, 4, 10, 0))
+        note_panel.pack(side="bottom", fill="x")
+        self.note_label = ttk.Label(note_panel)
+        self.note_label.pack(anchor="w", pady=(0, 2))
+        note_box = ttk.Frame(note_panel)
+        note_box.pack(fill="x")
+        self.note_text = tk.Text(note_box, height=3, wrap="word", undo=True,
+                                 relief="flat", borderwidth=0, highlightthickness=1,
+                                 padx=round(4 * scale), pady=round(2 * scale),
+                                 font=base_font)
+        note_scroll = ttk.Scrollbar(note_box, orient="vertical", command=self.note_text.yview)
+        self.note_text.configure(yscrollcommand=note_scroll.set)
+        self.note_text.pack(side="left", fill="x", expand=True)
+        note_scroll.pack(side="left", fill="y")
+
         middle = ttk.Frame(root, padding=(10, 4))
         middle.pack(fill="both", expand=True)
-        self.tree = ttk.Treeview(middle, columns=("text",), show="tree headings",
+        self.tree = ttk.Treeview(middle, columns=("text", "note"), show="tree headings",
                                  selectmode="browse")
         self.tree.heading(CHECK_COLUMN, text="✓")
         self.tree.heading("text", text="Пункт", anchor="w")
+        self.tree.heading("note", text=NOTE_MARK)
         check_width = self._box + round(20 * scale)
         self.tree.column(CHECK_COLUMN, width=check_width, minwidth=check_width, stretch=False)
         self.tree.column("text", anchor="w", stretch=True)
+        note_width = linespace + round(16 * scale)
+        self.tree.column("note", anchor="center", width=note_width, minwidth=note_width,
+                         stretch=False)
         scrollbar = ttk.Scrollbar(middle, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=scrollbar.set)
         self.tree.pack(side="left", fill="both", expand=True)
@@ -199,6 +233,7 @@ class App:
         menu.add_command(label="Отметить / снять отметку", accelerator="Пробел",
                          command=self.toggle_selected)
         menu.add_command(label="Изменить", accelerator="F2", command=self.edit_selected)
+        menu.add_command(label="Комментарий", command=self.edit_note)
         menu.add_command(label="Удалить", accelerator="Delete", command=self.delete_selected)
         menu.add_separator()
         menu.add_command(label="Выше", accelerator="Ctrl+↑",
@@ -210,9 +245,11 @@ class App:
         tree = self.tree
         tree.bind("<ButtonPress-1>", self._on_press)
         tree.bind("<B1-Motion>", self._on_motion)
-        tree.bind("<ButtonRelease-1>", lambda e: self.drag_end())
+        tree.bind("<ButtonRelease-1>", self._on_release)
         tree.bind("<Double-Button-1>", self._on_double)
         tree.bind("<Button-3>", self._on_right_click)
+        tree.bind("<<TreeviewSelect>>", lambda e: self._sync_note_panel())
+        tree.bind("<Escape>", lambda e: self._key(self.deselect))
         tree.bind("<space>", lambda e: self._key(self.toggle_selected))
         tree.bind("<Delete>", lambda e: self._key(self.delete_selected))
         tree.bind("<F2>", lambda e: self._key(self.edit_selected))
@@ -224,6 +261,10 @@ class App:
         tree.bind("<Configure>", lambda e: self.end_edit(True))
         self.entry.bind("<Return>", lambda e: self._key(self.add_item))
         self.entry.bind("<KP_Enter>", lambda e: self._key(self.add_item))
+        self.note_text.bind("<<Modified>>", self._on_note_modified)
+        self.note_text.bind("<FocusOut>", lambda e: self._commit_and_render())
+        # Runs before the Text class binding <Control-o>, which would insert a line.
+        self.note_text.bind("<Control-KeyPress>", self.on_ctrl_key)
         self.root.bind("<Control-KeyPress>", self.on_ctrl_key)
         self.root.bind("<Alt-KeyPress>", self.on_alt_key)
         self.root.bind("<F10>", self.on_f10)
@@ -268,6 +309,8 @@ class App:
                            selectcolor=palette.menu_fg)
         self.hint.configure(foreground=palette.muted)
         self.tree.tag_configure("done", foreground=palette.done_fg, font=self._done_font)
+        self._palette = palette
+        self._paint_note_panel()
 
         # Hold the old images until refresh() has pointed every row at the new ones:
         # dropping the last reference deletes the Tk image immediately.
@@ -321,6 +364,7 @@ class App:
     # ---- rendering -------------------------------------------------------
 
     def refresh(self, select=None):
+        self.commit_note()
         tree = self.tree
         items = self.checklist.items
         # Row iids are always "0".."n-1" in order; rows are updated in place so the
@@ -332,7 +376,7 @@ class App:
             iid = str(i)
             options = {
                 "image": self.img_on if item.done else self.img_off,
-                "values": (item.text,),
+                "values": (item.text, NOTE_MARK if item.note else ""),
                 "tags": ("done",) if item.done else (),
             }
             if tree.exists(iid):
@@ -347,6 +391,7 @@ class App:
         self.progress_bar.configure(maximum=max(cl.total, 1), value=cl.done_count)
         name = os.path.basename(cl.path) if cl.path else UNTITLED
         self.root.title(f"{'*' if cl.dirty else ''}{name} - {APP_NAME}")
+        self._sync_note_panel()
 
     def select(self, index):
         iid = str(index)
@@ -355,10 +400,98 @@ class App:
         self.tree.selection_set(iid)
         self.tree.focus(iid)
         self.tree.see(iid)
+        self._sync_note_panel()
+
+    def deselect(self):
+        self.end_edit(True)
+        self.tree.selection_remove(*self.tree.selection())
+        self.tree.focus("")
+        self._sync_note_panel()
 
     def selected_index(self):
         selection = self.tree.selection()
         return int(selection[0]) if selection else None
+
+    # ---- note panel ------------------------------------------------------
+
+    def _find_note_item(self):
+        items = self.checklist.items
+        index = self.note_index
+        if index is not None and index < len(items) and items[index] is self._note_item:
+            return index
+        # The item may have moved (drag) since the panel was loaded.
+        return next((i for i, it in enumerate(items) if it is self._note_item), None)
+
+    def commit_note(self):
+        """Writes the panel text into the item it was loaded from; True if it changed."""
+        if self._note_item is None:
+            return False
+        index = self._find_note_item()
+        if index is None:  # the item is gone: its text must not land on a neighbour
+            self._note_item = self.note_index = None
+            return False
+        self.note_index = index
+        if not self.checklist.set_note(index, self.note_text.get("1.0", "end-1c")):
+            return False
+        self._note_item = self.checklist.items[index]  # Item is immutable: track the new one
+        return True
+
+    def _commit_and_render(self):
+        if self.commit_note():
+            self.refresh()
+
+    def _on_note_modified(self, event):
+        # <<Modified>> fires only when the flag flips, so reset it after every edit.
+        if not self.note_text.edit_modified():
+            return
+        self.note_text.edit_modified(False)
+        self._commit_and_render()
+
+    def _sync_note_panel(self):
+        if self.commit_note():
+            self.refresh()  # redraws the ✎ mark and title, then comes back here
+            return
+        index = self.selected_index()
+        items = self.checklist.items
+        item = items[index] if index is not None and index < len(items) else None
+        if item is not None and item is self._note_item:
+            self.note_index = index
+            return
+        text = self.note_text
+        self.note_index, self._note_item = (index, item) if item is not None else (None, None)
+        text.configure(state="normal")
+        text.delete("1.0", "end")
+        if item is not None:
+            text.insert("1.0", item.note)
+        # Otherwise Ctrl+Z would bring back the previous item's text.
+        text.edit_reset()
+        text.edit_modified(False)
+        if item is None:
+            text.configure(state="disabled")
+            self.note_label.configure(text="Комментарий: выделите пункт в списке")
+        else:
+            short = item.text if len(item.text) <= 40 else item.text[:39] + "…"
+            self.note_label.configure(text=f"Комментарий к «{short}»:")
+        self._paint_note_panel()
+
+    def _paint_note_panel(self):
+        p = self._palette
+        if p is None:
+            return
+        enabled = self._note_item is not None
+        self.note_text.configure(
+            background=p.field if enabled else p.bg, foreground=p.fg,
+            insertbackground=p.fg, selectbackground=p.select_bg,
+            selectforeground=p.select_fg, highlightbackground=p.border,
+            highlightcolor=p.select_bg)
+
+    def edit_note(self):
+        self.end_edit(True)
+        if self.selected_index() is None:
+            return
+        self._sync_note_panel()
+        self.note_text.focus_set()
+        self.note_text.mark_set("insert", "end-1c")
 
     # ---- item operations -------------------------------------------------
 
@@ -410,6 +543,7 @@ class App:
             self._drag = None
             return
         if index != self._drag:
+            self._click_toggle = False  # a real drag, not a click
             self._drag = self.checklist.move(self._drag, index)
             self.refresh(select=self._drag)
 
@@ -452,8 +586,13 @@ class App:
         return "break"
 
     def end_edit(self, commit=True):
+        # Every list operation, save and file switch passes through here, so this is
+        # where a note typed without a <<Modified>> round trip reaches the model.
+        note_changed = self.commit_note()
         editor = self.editor
         if editor is None:
+            if note_changed:
+                self.refresh()
             return
         # Clear first: destroying a focused entry fires <FocusOut> re-entrantly.
         self.editor = None
@@ -474,6 +613,11 @@ class App:
         return int(row) if row else None
 
     def _on_press(self, event):
+        self._click_toggle = False
+        if self.tree.identify_region(event.x, event.y) == "nothing":
+            self.deselect()  # empty space below the rows
+            self.tree.focus_set()
+            return "break"
         index = self._row_under(event)
         if index is None:
             return None
@@ -482,8 +626,16 @@ class App:
             self.select(index)
             self.tree.focus_set()
             return "break"
+        # Decided on release: pressing a selected row may still start a drag.
+        self._click_toggle = index == self.selected_index()
         self.drag_start(index)
         return None
+
+    def _on_release(self, event):
+        self.drag_end()
+        if self._click_toggle:
+            self._click_toggle = False
+            self.deselect()
 
     def _on_motion(self, event):
         if self._drag is None:
@@ -509,6 +661,7 @@ class App:
         return int(visible[0]) if y < first_top else int(visible[-1])
 
     def _on_double(self, event):
+        self._click_toggle = False
         index = self._row_under(event)
         if index is None:
             return None
@@ -538,6 +691,11 @@ class App:
             return None  # Ctrl+Alt is AltGr on many layouts: it types characters.
         if sys.platform == "win32":
             key = WIN_KEYCODES.get(event.keycode)
+            edit_event = WIN_EDIT_KEYCODES.get(event.keycode)
+            latin = len(event.keysym) == 1 and event.keysym.isascii()
+            if edit_event and not latin and isinstance(event.widget, (tk.Entry, tk.Text, ttk.Entry)):
+                event.widget.event_generate(edit_event)
+                return "break"
         else:
             key = event.keysym.lower() if len(event.keysym) == 1 else None
         shift = bool(event.state & 0x1)

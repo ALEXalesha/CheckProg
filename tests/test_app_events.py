@@ -174,6 +174,103 @@ class RealEventTests(unittest.TestCase):
         open_menu = self.generate_key("<KeyPress-F10>", 121)
         open_menu.assert_called_once_with("file")
 
+    # Explicit timestamps: two clicks within 500 ms would be merged into a double click.
+    def click_at(self, xy, time):
+        self.tree.event_generate("<ButtonPress-1>", x=xy[0], y=xy[1], time=time)
+        self.top.update()
+        self.tree.event_generate("<ButtonRelease-1>", x=xy[0], y=xy[1], time=time + 30)
+        self.top.update()
+
+    def test_second_click_on_selected_row_deselects(self):
+        xy = self.center(1, "text")
+        self.click_at(xy, 10_000)
+        self.assertEqual(self.app.selected_index(), 1)
+        self.click_at(xy, 20_000)
+        self.assertIsNone(self.app.selected_index())
+        self.assertIsNone(self.app.note_index)
+        self.click_at(xy, 30_000)
+        self.assertEqual(self.app.selected_index(), 1)
+
+    def test_drag_from_selected_row_keeps_selection(self):
+        self.click_at(self.center(0, "text"), 10_000)
+        start = self.center(0, "text")
+        self.tree.event_generate("<ButtonPress-1>", x=start[0], y=start[1], time=20_000)
+        self.top.update()
+        for n, row in enumerate((1, 2), 1):
+            xy = self.center(row, "text")
+            self.tree.event_generate("<B1-Motion>", x=xy[0], y=xy[1], time=20_000 + n * 50)
+            self.top.update()
+        end = self.center(2, "text")
+        self.tree.event_generate("<ButtonRelease-1>", x=end[0], y=end[1], time=20_200)
+        self.top.update()
+        self.assertEqual(self.texts(), "bcade")
+        self.assertEqual(self.app.selected_index(), 2)
+
+    def test_click_on_empty_area_deselects(self):
+        self.assertIsNotNone(self.app.selected_index())
+        x = self.center(0, "text")[0]
+        self.click_at((x, self.tree.winfo_height() - 5), 10_000)
+        self.assertIsNone(self.app.selected_index())
+
+    def test_escape_on_tree_deselects(self):
+        self.tree.focus_force()
+        self.top.update()
+        self.tree.event_generate("<Escape>")
+        self.top.update()
+        self.assertIsNone(self.app.selected_index())
+
+    def test_double_click_on_selected_row_still_edits(self):
+        xy = self.center(1, "text")
+        self.click_at(xy, 10_000)
+        self.click_at(xy, 20_000 - 30)  # deselects...
+        self.click_at(xy, 20_100)       # ...and this press is a double click: edit
+        self.assertIsNotNone(self.app.editor)
+        self.assertEqual(self.app.editor.index, 1)
+        self.assertEqual(self.app.selected_index(), 1)
+
+    def test_ctrl_o_in_note_does_not_insert_newline(self):
+        self.app.select(0)
+        self.app.note_text.focus_force()
+        self.top.update()
+        with mock.patch.object(self.app, "open_file") as open_file:
+            self.app.note_text.event_generate("<Control-KeyPress-o>", keycode=79)
+            self.top.update()
+        open_file.assert_called_once()
+        self.assertEqual(self.app.note_text.get("1.0", "end-1c"), "")
+
+    def paste_with(self, widget, keysym):
+        self.root.clipboard_clear()
+        self.root.clipboard_append("буфер")
+        widget.focus_force()
+        self.top.update()
+        widget.event_generate(f"<Control-KeyPress-{keysym}>", keycode=86)
+        self.top.update()
+
+    @unittest.skipUnless(os.name == "nt", "keycodes are Windows virtual-key codes")
+    def test_ctrl_v_in_russian_layout_pastes_into_note(self):
+        self.app.select(0)
+        self.paste_with(self.app.note_text, "Cyrillic_em")
+        self.assertEqual(self.app.note_text.get("1.0", "end-1c"), "буфер")
+        self.assertEqual(self.app.checklist.items[0].note, "буфер")
+
+    @unittest.skipUnless(os.name == "nt", "keycodes are Windows virtual-key codes")
+    def test_ctrl_v_in_russian_layout_pastes_into_entry(self):
+        self.paste_with(self.app.entry, "Cyrillic_em")
+        self.assertEqual(self.app.entry.get(), "буфер")
+
+    @unittest.skipUnless(os.name == "nt", "keycodes are Windows virtual-key codes")
+    def test_ctrl_v_in_latin_layout_pastes_once(self):
+        self.app.select(0)
+        self.paste_with(self.app.note_text, "v")
+        self.assertEqual(self.app.note_text.get("1.0", "end-1c"), "буфер")
+        self.paste_with(self.app.entry, "v")
+        self.assertEqual(self.app.entry.get(), "буфер")
+
+    @unittest.skipUnless(os.name == "nt", "keycodes are Windows virtual-key codes")
+    def test_ctrl_v_on_tree_does_nothing(self):
+        self.paste_with(self.tree, "Cyrillic_em")
+        self.assertEqual(self.texts(), "abcde")
+
 
 if __name__ == "__main__":
     unittest.main()

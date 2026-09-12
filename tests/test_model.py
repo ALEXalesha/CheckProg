@@ -427,5 +427,57 @@ class RegressionTests(TmpDirTestCase):
         self.assertEqual(loaded.done_count, 1667)
 
 
+class NoteTests(TmpDirTestCase):
+    def test_set_note_marks_dirty_and_cleans(self):
+        cl = make("a")
+        self.assertTrue(cl.set_note(0, "  строка 1\r\nстрока 2\rстрока 3 \ud83d  "))
+        self.assertEqual(cl.items[0].note, "строка 1\nстрока 2\nстрока 3")
+        self.assertTrue(cl.dirty)
+
+    def test_same_note_is_not_a_change(self):
+        cl = make("a")
+        cl.set_note(0, "x")
+        cl.dirty = False
+        self.assertFalse(cl.set_note(0, " x "))
+        self.assertFalse(cl.dirty)
+
+    def test_note_survives_other_operations(self):
+        cl = make("a", "b")
+        cl.set_note(0, "N")
+        cl.toggle(0)
+        cl.rename(0, "aa")
+        cl.move(0, 1)
+        self.assertEqual(cl.items[1], Item("aa", True, "N"))
+
+    def test_note_bad_index_and_type(self):
+        cl = make("a")
+        with self.assertRaises(IndexError):
+            cl.set_note(1, "x")
+        with self.assertRaises(TypeError):
+            cl.set_note(0, None)
+        self.assertFalse(cl.dirty)
+
+    def test_roundtrip_and_compact_json(self):
+        cl = make("a", "b")
+        cl.set_note(1, "многострочная\nзаметка 😀")
+        cl.save(self.path())
+        with open(self.path(), encoding="utf-8") as f:
+            data = json.load(f)
+        self.assertEqual(data["items"][0], {"text": "a", "done": False})
+        self.assertEqual(data["items"][1]["note"], "многострочная\nзаметка 😀")
+        self.assertEqual(Checklist.load(self.path()).items, cl.items)
+
+    def test_load_note_validation(self):
+        p = self.write('{"items": [{"text": "a", "note": 5}]}')
+        with self.assertRaises(ChecklistFormatError):
+            Checklist.load(p)
+        p = self.write('{"items": [{"text": "a", "note": "  n\\r\\n "}]}')
+        self.assertEqual(Checklist.load(p).items[0].note, "n")
+
+    def test_old_files_without_note_still_load(self):
+        p = self.write('{"version": 1, "items": [{"text": "a", "done": true}]}')
+        self.assertEqual(Checklist.load(p).items[0], Item("a", True, ""))
+
+
 if __name__ == "__main__":
     unittest.main()

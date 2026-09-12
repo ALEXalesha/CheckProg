@@ -1,7 +1,7 @@
 import json
 import os
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 FORMAT_VERSION = 1
 
@@ -14,6 +14,7 @@ class ChecklistFormatError(ValueError):
 class Item:
     text: str
     done: bool = False
+    note: str = ""
 
 
 _SURROGATES = {cp: None for cp in range(0xD800, 0xE000)}
@@ -26,6 +27,12 @@ def clean_text(text):
     # code points that cannot be encoded as UTF-8 when saving.
     text = text.translate(_SURROGATES)
     return " ".join(text.splitlines()).replace("\t", " ").strip()
+
+
+def clean_note(text):
+    if not isinstance(text, str):
+        raise TypeError("note must be a string")
+    return "\n".join(text.translate(_SURROGATES).splitlines()).strip()
 
 
 def _parse(data):
@@ -47,9 +54,12 @@ def _parse(data):
         done = raw.get("done", False)
         if not isinstance(done, bool):
             raise ChecklistFormatError(f"пункт {n}: done должно быть true или false")
+        note = raw.get("note", "")
+        if not isinstance(note, str):
+            raise ChecklistFormatError(f"пункт {n}: note должно быть строкой")
         text = clean_text(raw["text"])
         if text:
-            items.append(Item(text, done))
+            items.append(Item(text, done, clean_note(note)))
     return items
 
 
@@ -96,7 +106,7 @@ class Checklist:
         self._check_index(index)
         item = self._items[index]
         if item.done != bool(done):
-            self._items[index] = Item(item.text, bool(done))
+            self._items[index] = replace(item, done=bool(done))
             self.dirty = True
 
     def toggle(self, index):
@@ -109,7 +119,17 @@ class Checklist:
         item = self._items[index]
         if not text or text == item.text:
             return False
-        self._items[index] = Item(text, item.done)
+        self._items[index] = replace(item, text=text)
+        self.dirty = True
+        return True
+
+    def set_note(self, index, text):
+        self._check_index(index)
+        note = clean_note(text)
+        item = self._items[index]
+        if note == item.note:
+            return False
+        self._items[index] = replace(item, note=note)
         self.dirty = True
         return True
 
@@ -131,7 +151,7 @@ class Checklist:
     def to_dict(self):
         return {
             "version": FORMAT_VERSION,
-            "items": [{"text": it.text, "done": it.done} for it in self._items],
+            "items": [_item_dict(it) for it in self._items],
         }
 
     @classmethod
@@ -155,6 +175,13 @@ class Checklist:
         write_json_atomic(target, self.to_dict())
         self.path = target
         self.dirty = False
+
+
+def _item_dict(item):
+    data = {"text": item.text, "done": item.done}
+    if item.note:
+        data["note"] = item.note  # absent key keeps note-less files unchanged
+    return data
 
 
 def write_json_atomic(target, data):
