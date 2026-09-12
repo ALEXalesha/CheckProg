@@ -9,14 +9,40 @@ from checkprog import APP_NAME, __version__
 from checkprog.model import Checklist, ChecklistFormatError
 from checkprog.settings import load_settings, resolve_paths, save_settings
 
-CHECK_ON = "☑"
-CHECK_OFF = "☐"
 UNTITLED = "Без имени"
 FILETYPES = [("Чек-листы", "*.json"), ("Все файлы", "*.*")]
 # Windows virtual-key codes do not depend on the keyboard layout, so Ctrl+S
 # keeps working when the Russian layout is active (keysym is then Cyrillic_*).
 WIN_KEYCODES = {78: "n", 79: "o", 83: "s"}
+# Tk on Windows reports Alt as 0x20000; 0x0008 there means NumLock.
+ALT_MASK = 0x20000 if sys.platform == "win32" else 0x0008
 ICON_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icon.ico")
+CHECK_COLUMN = "#0"
+GREEN = "#2e7d32"
+
+
+def _stamp_line(img, start, end, width, color):
+    (x0, y0), (x1, y1) = start, end
+    steps = max(abs(x1 - x0), abs(y1 - y0), 1)
+    for i in range(int(steps) + 1):
+        x = round(x0 + (x1 - x0) * i / steps - width / 2)
+        y = round(y0 + (y1 - y0) * i / steps - width / 2)
+        img.put(color, to=(x, y, x + width, y + width))
+
+
+def make_checkbox_image(master, size, checked):
+    img = tk.PhotoImage(master=master, width=size, height=size)
+    border = max(1, size // 10)
+    img.put(GREEN if checked else "#8a8a8a", to=(0, 0, size, size))
+    img.put(GREEN if checked else "#ffffff", to=(border, border, size - border, size - border))
+    for x, y in ((0, 0), (size - 1, 0), (0, size - 1), (size - 1, size - 1)):
+        img.transparency_set(x, y, True)
+    if checked:
+        pen = max(2, round(size / 7))
+        a, b, c = (size * 0.24, size * 0.52), (size * 0.43, size * 0.71), (size * 0.77, size * 0.31)
+        _stamp_line(img, a, b, pen, "#ffffff")
+        _stamp_line(img, b, c, pen, "#ffffff")
+    return img
 
 
 class _Editor:
@@ -50,8 +76,10 @@ class App:
     def _build_ui(self):
         root = self.root
         scale = root.winfo_fpixels("1i") / 96.0
-        root.geometry(f"{round(520 * scale)}x{round(620 * scale)}")
-        root.minsize(round(340 * scale), round(320 * scale))
+        width = min(round(520 * scale), int(root.winfo_screenwidth() * 0.9))
+        height = min(round(620 * scale), int(root.winfo_screenheight() * 0.85))
+        root.geometry(f"{width}x{height}")
+        root.minsize(min(round(340 * scale), width), min(round(320 * scale), height))
         if os.path.isfile(ICON_PATH):
             try:
                 root.iconbitmap(default=ICON_PATH)
@@ -59,13 +87,23 @@ class App:
                 pass
 
         base_font = tkfont.nametofont("TkDefaultFont")
-        # Keep a reference: Tk deletes the named font when the Python object is collected.
+        linespace = base_font.metrics("linespace")
+        # Keep references: Tk deletes fonts and images when the Python object is collected.
         self._done_font = base_font.copy()
         self._done_font.configure(overstrike=1)
+        box = max(12, linespace - 2)
+        self.img_on = make_checkbox_image(root, box, True)
+        self.img_off = make_checkbox_image(root, box, False)
+
+        style = ttk.Style(root)
         # ttk rows have a fixed pixel height; derive it from the font so text is not
         # clipped at 125-200% display scaling.
-        ttk.Style(root).configure(
-            "Treeview", rowheight=base_font.metrics("linespace") + round(8 * scale))
+        style.configure("Treeview", rowheight=max(linespace, box) + round(8 * scale))
+        # Drop the expand/collapse indicator: it reserves blank space before the checkbox.
+        style.layout("Treeview.Item", [("Treeitem.padding", {"sticky": "nswe", "children": [
+            ("Treeitem.image", {"side": "left", "sticky": ""}),
+            ("Treeitem.focus", {"side": "left", "sticky": "", "children": [
+                ("Treeitem.text", {"side": "left", "sticky": ""})]})]})])
 
         self._build_menu()
 
@@ -85,20 +123,19 @@ class App:
         ttk.Button(add_row, text="Добавить", command=self.add_item).pack(side="left", padx=(6, 0))
         hint = ttk.Label(
             bottom, foreground="gray40",
-            text="Щелчок по ☐: отметить  •  двойной щелчок: изменить  •  "
+            text="Щелчок по квадратику: отметить  •  двойной щелчок: изменить  •  "
                  "Delete: удалить  •  перетащите строку, чтобы переставить")
         hint.pack(fill="x", pady=(6, 0))
         hint.bind("<Configure>", lambda e: hint.configure(wraplength=max(e.width, 50)))
 
         middle = ttk.Frame(root, padding=(10, 4))
         middle.pack(fill="both", expand=True)
-        self.tree = ttk.Treeview(middle, columns=("done", "text"), show="headings",
+        self.tree = ttk.Treeview(middle, columns=("text",), show="tree headings",
                                  selectmode="browse")
-        self.tree.heading("done", text="✓")
+        self.tree.heading(CHECK_COLUMN, text="✓")
         self.tree.heading("text", text="Пункт", anchor="w")
-        check_width = base_font.measure(CHECK_ON * 2) + round(16 * scale)
-        self.tree.column("done", width=check_width, minwidth=check_width,
-                         stretch=False, anchor="center")
+        check_width = box + round(20 * scale)
+        self.tree.column(CHECK_COLUMN, width=check_width, minwidth=check_width, stretch=False)
         self.tree.column("text", anchor="w", stretch=True)
         self.tree.tag_configure("done", foreground="gray50", font=self._done_font)
         scrollbar = ttk.Scrollbar(middle, orient="vertical", command=self.tree.yview)
@@ -179,12 +216,15 @@ class App:
             tree.delete(*existing[len(items):])
         for i, item in enumerate(items):
             iid = str(i)
-            values = (CHECK_ON if item.done else CHECK_OFF, item.text)
-            tags = ("done",) if item.done else ()
+            options = {
+                "image": self.img_on if item.done else self.img_off,
+                "values": (item.text,),
+                "tags": ("done",) if item.done else (),
+            }
             if tree.exists(iid):
-                tree.item(iid, values=values, tags=tags)
+                tree.item(iid, **options)
             else:
-                tree.insert("", "end", iid=iid, values=values, tags=tags)
+                tree.insert("", "end", iid=iid, **options)
         if select is not None:
             self.select(select)
 
@@ -323,7 +363,7 @@ class App:
         index = self._row_under(event)
         if index is None:
             return None
-        if self.tree.identify_column(event.x) == "#1":
+        if self.tree.identify_column(event.x) == CHECK_COLUMN:
             self.toggle_index(index)
             self.select(index)
             self.tree.focus_set()
@@ -358,7 +398,7 @@ class App:
         index = self._row_under(event)
         if index is None:
             return None
-        if self.tree.identify_column(event.x) == "#1":
+        if self.tree.identify_column(event.x) == CHECK_COLUMN:
             # The second click of a double click lands here instead of <ButtonPress-1>.
             self.toggle_index(index)
             self.select(index)
@@ -380,6 +420,8 @@ class App:
     # ---- files ---------------------------------------------------------------
 
     def on_ctrl_key(self, event):
+        if event.state & ALT_MASK:
+            return None  # Ctrl+Alt is AltGr on many layouts: it types characters.
         if sys.platform == "win32":
             key = WIN_KEYCODES.get(event.keycode)
         else:

@@ -369,5 +369,63 @@ class SaveLoadTests(TmpDirTestCase):
         self.assertEqual(os.path.basename(cl.path), "one.json")
 
 
+class RegressionTests(TmpDirTestCase):
+    def test_lone_surrogates_are_dropped_everywhere(self):
+        broken = "a\ud83d b\udced\udca0\udcbd"
+        cl = Checklist()
+        cl.add(broken)
+        cl.add("x")
+        cl.rename(1, "y\ude00")
+        self.assertEqual(texts(cl), ["a b", "y"])
+        cl.save(self.path())
+        self.assertEqual(texts(Checklist.load(self.path())), ["a b", "y"])
+
+    def test_only_surrogates_counts_as_blank(self):
+        self.assertIsNone(Checklist().add("\ud83d"))
+
+    def test_escaped_lone_surrogate_in_file_is_dropped(self):
+        p = self.write('{"items": [{"text": "ok\\ud83d"}]}')
+        self.assertEqual(texts(Checklist.load(p)), ["ok"])
+
+    def test_real_emoji_survive(self):
+        cl = make("😀 ok 👍🏽")
+        cl.save(self.path())
+        self.assertEqual(texts(Checklist.load(self.path())), ["😀 ok 👍🏽"])
+
+    @unittest.skipUnless(os.name == "nt", "read-only files block replace only on Windows")
+    def test_read_only_target_fails_cleanly(self):
+        import stat
+        cl = make("старое")
+        cl.save(self.path())
+        os.chmod(self.path(), stat.S_IREAD)
+        try:
+            cl.add("новое")
+            with self.assertRaises(PermissionError):
+                cl.save()
+            self.assertEqual(texts(Checklist.load(self.path())), ["старое"])
+            self.assertEqual(os.listdir(self.tmp), ["list.json"])
+            self.assertTrue(cl.dirty)
+        finally:
+            os.chmod(self.path(), stat.S_IREAD | stat.S_IWRITE)
+
+    def test_cyrillic_and_spaces_in_path(self):
+        folder = os.path.join(self.tmp, "Мои списки 2026")
+        os.mkdir(folder)
+        target = os.path.join(folder, "Покупки на неделю.json")
+        make("хлеб").save(target)
+        self.assertEqual(texts(Checklist.load(target)), ["хлеб"])
+
+    def test_large_list_roundtrip(self):
+        cl = Checklist()
+        for i in range(5000):
+            cl.add(f"пункт {i}")
+        for i in range(0, 5000, 3):
+            cl.toggle(i)
+        cl.save(self.path())
+        loaded = Checklist.load(self.path())
+        self.assertEqual(loaded.items, cl.items)
+        self.assertEqual(loaded.done_count, 1667)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from checkprog import app as app_module
-from checkprog.app import CHECK_OFF, CHECK_ON, App
+from checkprog.app import App
 from checkprog.model import Checklist
 from checkprog.settings import Paths, load_settings
 
@@ -52,17 +52,28 @@ class AppTestCase(unittest.TestCase):
 
     def rows(self):
         tree = self.app.tree
-        return [tuple(tree.item(iid, "values")) for iid in tree.get_children()]
+        return [tuple(str(v) for v in tree.item(iid, "values")) for iid in tree.get_children()]
+
+    def texts(self):
+        return [r[0] for r in self.rows()]
+
+    def checked(self, index):
+        image = self.app.tree.item(str(index), "image")
+        name = str(image[0]) if image else ""
+        self.assertIn(name, (str(self.app.img_on), str(self.app.img_off)))
+        return name == str(self.app.img_on)
 
     def assert_in_sync(self):
-        expected = [(CHECK_ON if it.done else CHECK_OFF, it.text)
-                    for it in self.app.checklist.items]
-        self.assertEqual([tuple(str(v) for v in r) for r in self.rows()], expected)
-        self.assertEqual(list(self.app.tree.get_children()),
-                         [str(i) for i in range(len(expected))])
         cl = self.app.checklist
+        self.assertEqual(self.rows(), [(it.text,) for it in cl.items])
+        self.assertEqual(list(self.app.tree.get_children()),
+                         [str(i) for i in range(len(cl))])
+        self.assertEqual([self.checked(i) for i in range(len(cl))],
+                         [it.done for it in cl.items])
         self.assertIn(f"{cl.done_count} из {cl.total}", self.app.progress_label.cget("text"))
         self.assertEqual(self.top.title().startswith("*"), cl.dirty)
+        selected = self.app.selected_index()
+        self.assertTrue(selected is None or 0 <= selected < len(cl))
 
     def add(self, *texts):
         for t in texts:
@@ -96,7 +107,8 @@ class BasicOperationTests(AppTestCase):
         self.add("a", "b")
         self.app.toggle_index(0)
         self.assert_in_sync()
-        self.assertEqual(self.rows()[0][0], CHECK_ON)
+        self.assertTrue(self.checked(0))
+        self.assertFalse(self.checked(1))
         self.assertIn("1 из 2", self.app.progress_label.cget("text"))
         self.assertEqual(float(self.app.progress_bar.cget("value")), 1.0)
         self.assertEqual(float(self.app.progress_bar.cget("maximum")), 2.0)
@@ -107,6 +119,11 @@ class BasicOperationTests(AppTestCase):
         self.assertIn("done", self.app.tree.item("0", "tags"))
         self.app.toggle_index(0)
         self.assertNotIn("done", self.app.tree.item("0", "tags") or ())
+
+    def test_numeric_looking_and_tcl_special_texts_survive(self):
+        weird = ["007", "1e3", "{", "}", "[x]", "a\\b", "$var", '"q"', "-flag", "{a b}"]
+        self.add(*weird)
+        self.assertEqual(self.texts(), weird)
 
     def test_delete_selects_neighbour(self):
         self.add("a", "b", "c")
@@ -127,14 +144,14 @@ class BasicOperationTests(AppTestCase):
         self.add("a", "b", "c")
         self.app.select(0)
         self.app.move_selected(-1)
-        self.assertEqual([r[1] for r in self.rows()], ["a", "b", "c"])
+        self.assertEqual(self.texts(), ["a", "b", "c"])
         self.app.move_selected(1)
         self.assert_in_sync()
-        self.assertEqual([r[1] for r in self.rows()], ["b", "a", "c"])
+        self.assertEqual(self.texts(), ["b", "a", "c"])
         self.assertEqual(self.selected(), 1)
         self.app.select(2)
         self.app.move_selected(1)
-        self.assertEqual([r[1] for r in self.rows()], ["b", "a", "c"])
+        self.assertEqual(self.texts(), ["b", "a", "c"])
 
     def test_drag_reorders(self):
         self.add("a", "b", "c", "d")
@@ -143,7 +160,7 @@ class BasicOperationTests(AppTestCase):
         self.app.drag_to(3)
         self.app.drag_end()
         self.assert_in_sync()
-        self.assertEqual([r[1] for r in self.rows()], ["b", "c", "d", "a"])
+        self.assertEqual(self.texts(), ["b", "c", "d", "a"])
         self.assertEqual(self.selected(), 3)
 
     def test_drag_after_list_shrinks_is_ignored(self):
@@ -154,6 +171,13 @@ class BasicOperationTests(AppTestCase):
         self.app.drag_to(0)
         self.app.drag_end()
         self.assert_in_sync()
+
+    def test_window_fits_on_small_screen(self):
+        self.top.update_idletasks()
+        geometry = self.top.geometry().split("+")[0]
+        width, height = (int(v) for v in geometry.split("x"))
+        self.assertLessEqual(width, self.top.winfo_screenwidth())
+        self.assertLessEqual(height, self.top.winfo_screenheight())
 
 
 class EditTests(AppTestCase):
@@ -166,7 +190,7 @@ class EditTests(AppTestCase):
         self.app.end_edit(commit=True)
         self.assertIsNone(self.app.editor)
         self.assert_in_sync()
-        self.assertEqual(self.rows()[1][1], "новое")
+        self.assertEqual(self.texts()[1], "новое")
 
     def test_edit_cancel(self):
         self.add("a")
@@ -175,7 +199,7 @@ class EditTests(AppTestCase):
         self.app.begin_edit(0)
         self.app.editor.entry.insert(0, "zzz")
         self.app.end_edit(commit=False)
-        self.assertEqual(self.rows()[0][1], "a")
+        self.assertEqual(self.texts()[0], "a")
         self.assertFalse(self.app.checklist.dirty)
 
     def test_edit_to_blank_keeps_text(self):
@@ -183,7 +207,7 @@ class EditTests(AppTestCase):
         self.app.begin_edit(0)
         self.app.editor.entry.delete(0, "end")
         self.app.end_edit(commit=True)
-        self.assertEqual(self.rows()[0][1], "a")
+        self.assertEqual(self.texts()[0], "a")
 
     def test_end_edit_is_reentrant_safe(self):
         self.add("a")
@@ -200,7 +224,7 @@ class EditTests(AppTestCase):
         self.app.select(1)
         self.app.delete_selected()
         self.assert_in_sync()
-        self.assertEqual([r[1] for r in self.rows()], ["x"])
+        self.assertEqual(self.texts(), ["x"])
 
     def test_begin_edit_twice_replaces_editor(self):
         self.add("a", "b")
@@ -210,6 +234,28 @@ class EditTests(AppTestCase):
         self.assertFalse(first.winfo_exists())
         self.assertEqual(self.app.editor.index, 1)
         self.app.end_edit(commit=False)
+
+    def test_half_deleted_emoji_does_not_break_save(self):
+        self.add("a")
+        self.app.begin_edit(0)
+        entry = self.app.editor.entry
+        entry.delete(0, "end")
+        entry.insert(0, "b😀")
+        entry.delete(2, "end")  # Tk 8.6 counts the emoji as two chars; cut the pair in half
+        self.app.end_edit(commit=True)
+        self.fdm["asksaveasfilename"].return_value = self.p("emoji.json")
+        self.assertTrue(self.app.save())
+        self.assertEqual([it.text for it in Checklist.load(self.p("emoji.json")).items], ["b"])
+
+    def test_save_commits_pending_edit(self):
+        self.add("a")
+        self.fdm["asksaveasfilename"].return_value = self.p("e.json")
+        self.app.begin_edit(0)
+        self.app.editor.entry.delete(0, "end")
+        self.app.editor.entry.insert(0, "b")
+        self.assertTrue(self.app.save())
+        self.assertEqual([it.text for it in Checklist.load(self.p("e.json")).items], ["b"])
+        self.assertFalse(self.app.checklist.dirty)
 
 
 class FileTests(AppTestCase):
@@ -250,8 +296,20 @@ class FileTests(AppTestCase):
         self.fdm["askopenfilename"].return_value = self.p("other.json")
         self.app.open_file()
         self.assert_in_sync()
-        self.assertEqual([r[1] for r in self.rows()], ["из файла"])
+        self.assertEqual(self.texts(), ["из файла"])
         self.assertIn("other.json", self.top.title())
+
+    def test_open_shorter_list_leaves_no_stale_rows(self):
+        self.add("1", "2", "3", "4")
+        self.app.toggle_index(3)
+        other = Checklist()
+        other.add("x")
+        other.save(self.p("short.json"))
+        self.mb["askyesnocancel"].return_value = False
+        self.fdm["askopenfilename"].return_value = self.p("short.json")
+        self.app.open_file()
+        self.assert_in_sync()
+        self.assertEqual(self.texts(), ["x"])
 
     def test_open_corrupt_file_keeps_current_list(self):
         self.add("мой")
@@ -261,7 +319,7 @@ class FileTests(AppTestCase):
         self.fdm["askopenfilename"].return_value = self.p("bad.json")
         self.app.open_file()
         self.mb["showerror"].assert_called_once()
-        self.assertEqual([r[1] for r in self.rows()], ["мой"])
+        self.assertEqual(self.texts(), ["мой"])
         self.assert_in_sync()
 
     def test_open_cancel_in_save_prompt_does_nothing(self):
@@ -269,7 +327,7 @@ class FileTests(AppTestCase):
         self.mb["askyesnocancel"].return_value = None
         self.app.open_file()
         self.fdm["askopenfilename"].assert_not_called()
-        self.assertEqual([r[1] for r in self.rows()], ["мой"])
+        self.assertEqual(self.texts(), ["мой"])
 
     def test_open_prompt_yes_saves_first(self):
         self.add("мой")
@@ -278,6 +336,14 @@ class FileTests(AppTestCase):
         self.fdm["askopenfilename"].return_value = ""
         self.app.open_file()
         self.assertEqual([it.text for it in Checklist.load(self.p("mine.json")).items], ["мой"])
+
+    def test_open_prompt_yes_but_save_cancelled_stops(self):
+        self.add("мой")
+        self.mb["askyesnocancel"].return_value = True
+        self.fdm["asksaveasfilename"].return_value = ""
+        self.app.open_file()
+        self.fdm["askopenfilename"].assert_not_called()
+        self.assertTrue(self.app.checklist.dirty)
 
     def test_new_asks_and_clears(self):
         self.add("a")
@@ -312,7 +378,7 @@ class FileTests(AppTestCase):
         self.mb["askyesnocancel"].return_value = None
         self.app.on_exit()
         self.mb["askyesnocancel"].assert_called_once()
-        self.assertEqual(self.rows()[0][1], "ab")
+        self.assertEqual(self.texts()[0], "ab")
 
 
 class StartupTests(AppTestCase):
@@ -327,7 +393,7 @@ class StartupTests(AppTestCase):
         cl.add("аргумент")
         cl.save(self.p("arg.json"))
         self.make_app(self.p("arg.json"))
-        self.assertEqual([r[1] for r in self.rows()], ["аргумент"])
+        self.assertEqual(self.texts(), ["аргумент"])
         self.assert_in_sync()
 
     def test_reopens_last_file(self):
@@ -336,9 +402,9 @@ class StartupTests(AppTestCase):
         cl.save(self.p("last.json"))
         self.app.open_path(self.p("last.json"))
         self.make_app()
-        self.assertEqual([r[1] for r in self.rows()], ["прошлый"])
+        self.assertEqual(self.texts(), ["прошлый"])
 
-    def test_missing_last_file_is_silent(self):
+    def test_missing_last_file_is_silent_and_forgotten(self):
         cl = Checklist()
         cl.add("x")
         cl.save(self.p("gone.json"))
@@ -347,43 +413,61 @@ class StartupTests(AppTestCase):
         self.make_app()
         self.mb["showerror"].assert_not_called()
         self.assertEqual(self.rows(), [])
+        self.assertNotIn("last_file", load_settings(self.paths.settings_file))
 
     def test_missing_initial_path_is_reported(self):
         self.make_app(self.p("nope.json"))
         self.mb["showerror"].assert_called_once()
 
+    def test_garbage_settings_do_not_break_startup(self):
+        with open(self.paths.settings_file, "w", encoding="utf-8") as f:
+            f.write('{"last_file": 5}')
+        self.make_app()
+        self.assertEqual(self.rows(), [])
+        with open(self.paths.settings_file, "w", encoding="utf-8") as f:
+            f.write("][")
+        self.make_app()
+        self.assertEqual(self.rows(), [])
+
 
 class KeyboardTests(AppTestCase):
-    def ctrl(self, keycode, keysym, shift=False):
-        event = SimpleNamespace(keycode=keycode, keysym=keysym, state=0x4 | (0x1 if shift else 0))
-        return self.app.on_ctrl_key(event)
+    def ctrl(self, keycode, keysym, extra_state=0):
+        event = SimpleNamespace(keycode=keycode, keysym=keysym, state=0x4 | extra_state)
+        with mock.patch.object(app_module.sys, "platform", "win32"):
+            return self.app.on_ctrl_key(event)
 
     def test_ctrl_s_works_in_russian_layout(self):
-        with mock.patch.object(self.app, "save") as save, \
-                mock.patch.object(app_module.sys, "platform", "win32"):
-            self.ctrl(83, "Cyrillic_yeru")
+        with mock.patch.object(self.app, "save") as save:
+            self.assertEqual(self.ctrl(83, "Cyrillic_yeru"), "break")
+        save.assert_called_once()
+
+    def test_ctrl_s_works_with_numlock_and_capslock(self):
+        with mock.patch.object(self.app, "save") as save:
+            self.ctrl(83, "S", extra_state=0x8 | 0x2)
         save.assert_called_once()
 
     def test_ctrl_shift_s_is_save_as(self):
         with mock.patch.object(self.app, "save_as") as save_as, \
-                mock.patch.object(self.app, "save") as save, \
-                mock.patch.object(app_module.sys, "platform", "win32"):
-            self.ctrl(83, "Cyrillic_YERU", shift=True)
+                mock.patch.object(self.app, "save") as save:
+            self.ctrl(83, "Cyrillic_YERU", extra_state=0x1)
         save_as.assert_called_once()
+        save.assert_not_called()
+
+    def test_altgr_is_not_a_shortcut(self):
+        with mock.patch.object(self.app, "save") as save:
+            self.assertIsNone(self.ctrl(83, "sacute", extra_state=app_module.ALT_MASK))
         save.assert_not_called()
 
     def test_ctrl_o_and_n(self):
         with mock.patch.object(self.app, "open_file") as op, \
-                mock.patch.object(self.app, "new_file") as nw, \
-                mock.patch.object(app_module.sys, "platform", "win32"):
+                mock.patch.object(self.app, "new_file") as nw:
             self.ctrl(79, "Cyrillic_shcha")
             self.ctrl(78, "Cyrillic_te")
         op.assert_called_once()
         nw.assert_called_once()
 
     def test_unrelated_ctrl_key_passes_through(self):
-        with mock.patch.object(app_module.sys, "platform", "win32"):
-            self.assertIsNone(self.ctrl(65, "a"))
+        self.assertIsNone(self.ctrl(65, "a"))
 
 
 if __name__ == "__main__":

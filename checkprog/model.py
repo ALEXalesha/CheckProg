@@ -16,9 +16,15 @@ class Item:
     done: bool = False
 
 
+_SURROGATES = {cp: None for cp in range(0xD800, 0xE000)}
+
+
 def clean_text(text):
     if not isinstance(text, str):
         raise TypeError("text must be a string")
+    # Tk 8.6 stores emoji as two UTF-16 halves; deleting one half leaves surrogate
+    # code points that cannot be encoded as UTF-8 when saving.
+    text = text.translate(_SURROGATES)
     return " ".join(text.splitlines()).replace("\t", " ").strip()
 
 
