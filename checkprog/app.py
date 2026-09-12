@@ -5,7 +5,7 @@ import traceback
 from tkinter import filedialog, messagebox, ttk
 from tkinter import font as tkfont
 
-from checkprog import APP_NAME, __version__
+from checkprog import APP_NAME, __version__, theme
 from checkprog.model import Checklist, ChecklistFormatError
 from checkprog.settings import load_settings, resolve_paths, save_settings
 
@@ -14,11 +14,19 @@ FILETYPES = [("Чек-листы", "*.json"), ("Все файлы", "*.*")]
 # Windows virtual-key codes do not depend on the keyboard layout, so Ctrl+S
 # keeps working when the Russian layout is active (keysym is then Cyrillic_*).
 WIN_KEYCODES = {78: "n", 79: "o", 83: "s"}
+# Alt+Ф / Alt+П / Alt+В / Alt+С: physical keys A, G, D, C in the ЙЦУКЕН layout.
+WIN_ALT_KEYCODES = {65: "file", 71: "item", 68: "view", 67: "help"}
 # Tk on Windows reports Alt as 0x20000; 0x0008 there means NumLock.
 ALT_MASK = 0x20000 if sys.platform == "win32" else 0x0008
+CONTROL_MASK = 0x0004
 ICON_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icon.ico")
 CHECK_COLUMN = "#0"
-GREEN = "#2e7d32"
+# Treeview item without the expand/collapse indicator, which would leave a gap
+# before the checkbox. Layouts belong to a ttk theme, so this is reapplied on switch.
+ITEM_LAYOUT = [("Treeitem.padding", {"sticky": "nswe", "children": [
+    ("Treeitem.image", {"side": "left", "sticky": ""}),
+    ("Treeitem.focus", {"side": "left", "sticky": "", "children": [
+        ("Treeitem.text", {"side": "left", "sticky": ""})]})]})]
 
 
 def _stamp_line(img, start, end, width, color):
@@ -30,11 +38,12 @@ def _stamp_line(img, start, end, width, color):
         img.put(color, to=(x, y, x + width, y + width))
 
 
-def make_checkbox_image(master, size, checked):
+def make_checkbox_image(master, size, checked, palette):
     img = tk.PhotoImage(master=master, width=size, height=size)
     border = max(1, size // 10)
-    img.put(GREEN if checked else "#8a8a8a", to=(0, 0, size, size))
-    img.put(GREEN if checked else "#ffffff", to=(border, border, size - border, size - border))
+    img.put(palette.accent if checked else palette.check_off_border, to=(0, 0, size, size))
+    img.put(palette.accent if checked else palette.check_off_fill,
+            to=(border, border, size - border, size - border))
     for x, y in ((0, 0), (size - 1, 0), (0, size - 1), (size - 1, size - 1)):
         img.transparency_set(x, y, True)
     if checked:
@@ -59,10 +68,13 @@ class App:
         self.checklist = Checklist()
         self.editor = None
         self._drag = None
+        self.theme_mode = theme.normalize_mode(self.settings.get("theme"))
+        self.theme = None
+        self.theme_var = tk.StringVar(master=root, value=self.theme_mode)
         self._build_ui()
         self._bind_events()
         root.protocol("WM_DELETE_WINDOW", self.on_exit)
-        self.refresh()
+        self.apply_theme()
         if initial_path:
             self.open_path(initial_path)
         else:
@@ -88,24 +100,15 @@ class App:
 
         base_font = tkfont.nametofont("TkDefaultFont")
         linespace = base_font.metrics("linespace")
-        # Keep references: Tk deletes fonts and images when the Python object is collected.
+        # Keep a reference: Tk deletes the named font when the Python object is collected.
         self._done_font = base_font.copy()
         self._done_font.configure(overstrike=1)
-        box = max(12, linespace - 2)
-        self.img_on = make_checkbox_image(root, box, True)
-        self.img_off = make_checkbox_image(root, box, False)
-
-        style = ttk.Style(root)
+        self._box = max(12, linespace - 2)
         # ttk rows have a fixed pixel height; derive it from the font so text is not
         # clipped at 125-200% display scaling.
-        style.configure("Treeview", rowheight=max(linespace, box) + round(8 * scale))
-        # Drop the expand/collapse indicator: it reserves blank space before the checkbox.
-        style.layout("Treeview.Item", [("Treeitem.padding", {"sticky": "nswe", "children": [
-            ("Treeitem.image", {"side": "left", "sticky": ""}),
-            ("Treeitem.focus", {"side": "left", "sticky": "", "children": [
-                ("Treeitem.text", {"side": "left", "sticky": ""})]})]})])
+        self._row_height = max(linespace, self._box) + round(8 * scale)
 
-        self._build_menu()
+        self._build_menu(scale)
 
         top = ttk.Frame(root, padding=(10, 10, 10, 4))
         top.pack(fill="x")
@@ -121,12 +124,13 @@ class App:
         self.entry = ttk.Entry(add_row)
         self.entry.pack(side="left", fill="x", expand=True)
         ttk.Button(add_row, text="Добавить", command=self.add_item).pack(side="left", padx=(6, 0))
-        hint = ttk.Label(
-            bottom, foreground="gray40",
+        self.hint = ttk.Label(
+            bottom,
             text="Щелчок по квадратику: отметить  •  двойной щелчок: изменить  •  "
                  "Delete: удалить  •  перетащите строку, чтобы переставить")
-        hint.pack(fill="x", pady=(6, 0))
-        hint.bind("<Configure>", lambda e: hint.configure(wraplength=max(e.width, 50)))
+        self.hint.pack(fill="x", pady=(6, 0))
+        self.hint.bind("<Configure>",
+                       lambda e: self.hint.configure(wraplength=max(e.width, 50)))
 
         middle = ttk.Frame(root, padding=(10, 4))
         middle.pack(fill="both", expand=True)
@@ -134,22 +138,42 @@ class App:
                                  selectmode="browse")
         self.tree.heading(CHECK_COLUMN, text="✓")
         self.tree.heading("text", text="Пункт", anchor="w")
-        check_width = box + round(20 * scale)
+        check_width = self._box + round(20 * scale)
         self.tree.column(CHECK_COLUMN, width=check_width, minwidth=check_width, stretch=False)
         self.tree.column("text", anchor="w", stretch=True)
-        self.tree.tag_configure("done", foreground="gray50", font=self._done_font)
         scrollbar = ttk.Scrollbar(middle, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=scrollbar.set)
         self.tree.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="left", fill="y")
 
-        self.item_menu = tk.Menu(root, tearoff=0)
+        self.item_menu = self._new_menu(root)
         self._fill_item_menu(self.item_menu)
         self.entry.focus_set()
 
-    def _build_menu(self):
-        menubar = tk.Menu(self.root)
-        file_menu = tk.Menu(menubar, tearoff=0)
+    def _new_menu(self, parent):
+        menu = tk.Menu(parent, tearoff=0)
+        self.menus.append(menu)
+        return menu
+
+    def _build_menu(self, scale):
+        # A native Windows menu bar ignores colors, so the bar is drawn with
+        # Menubuttons; their drop-down menus do follow the palette.
+        self.menu_bar = tk.Frame(self.root, borderwidth=0, highlightthickness=0)
+        self.menu_bar.pack(side="top", fill="x")
+        self.menu_buttons = {}
+        self.menus = []
+
+        def add(key, label):
+            button = tk.Menubutton(self.menu_bar, text=label, underline=0, relief="flat",
+                                   borderwidth=0, highlightthickness=0,
+                                   padx=round(8 * scale), pady=round(3 * scale))
+            menu = self._new_menu(button)
+            button.configure(menu=menu)
+            button.pack(side="left")
+            self.menu_buttons[key] = button
+            return menu
+
+        file_menu = add("file", "Файл")
         file_menu.add_command(label="Создать", accelerator="Ctrl+N", command=self.new_file)
         file_menu.add_command(label="Открыть…", accelerator="Ctrl+O", command=self.open_file)
         file_menu.add_command(label="Сохранить", accelerator="Ctrl+S", command=self.save)
@@ -157,16 +181,19 @@ class App:
                               command=self.save_as)
         file_menu.add_separator()
         file_menu.add_command(label="Выход", accelerator="Alt+F4", command=self.on_exit)
-        menubar.add_cascade(label="Файл", menu=file_menu)
 
-        item_menu = tk.Menu(menubar, tearoff=0)
-        self._fill_item_menu(item_menu)
-        menubar.add_cascade(label="Пункт", menu=item_menu)
+        self._fill_item_menu(add("item", "Пункт"))
 
-        help_menu = tk.Menu(menubar, tearoff=0)
+        view_menu = add("view", "Вид")
+        theme_menu = self._new_menu(view_menu)
+        for mode in theme.MODES:
+            theme_menu.add_radiobutton(label=theme.MODE_LABELS[mode], value=mode,
+                                       variable=self.theme_var,
+                                       command=lambda m=mode: self.set_theme_mode(m))
+        view_menu.add_cascade(label="Тема", menu=theme_menu)
+
+        help_menu = add("help", "Справка")
         help_menu.add_command(label="О программе", command=self.show_about)
-        menubar.add_cascade(label="Справка", menu=help_menu)
-        self.root.configure(menu=menubar)
 
     def _fill_item_menu(self, menu):
         menu.add_command(label="Отметить / снять отметку", accelerator="Пробел",
@@ -198,11 +225,98 @@ class App:
         self.entry.bind("<Return>", lambda e: self._key(self.add_item))
         self.entry.bind("<KP_Enter>", lambda e: self._key(self.add_item))
         self.root.bind("<Control-KeyPress>", self.on_ctrl_key)
+        self.root.bind("<Alt-KeyPress>", self.on_alt_key)
+        self.root.bind("<F10>", self.on_f10)
+        self.root.bind("<FocusIn>", self.on_focus_in, add="+")
+        self.root.bind("<Map>", self._on_map, add="+")
 
     @staticmethod
     def _key(action):
         action()
         return "break"
+
+    # ---- theme -------------------------------------------------------------
+
+    def set_theme_mode(self, mode):
+        self.theme_mode = theme.normalize_mode(mode)
+        self.settings["theme"] = self.theme_mode
+        save_settings(self.paths.settings_file, self.settings)
+        self.apply_theme()
+
+    def apply_theme(self):
+        self.theme = theme.resolve(self.theme_mode, theme.system_prefers_dark())
+        palette = theme.palette_for(self.theme)
+        style = ttk.Style(self.root)
+        ttk_theme = palette.ttk_theme if palette.ttk_theme in style.theme_names() else "clam"
+        if style.theme_use() != ttk_theme:
+            style.theme_use(ttk_theme)
+        if self.theme == "dark":
+            self._style_dark(style, palette)
+        style.configure("Treeview", rowheight=self._row_height)
+        style.layout("Treeview.Item", ITEM_LAYOUT)
+
+        self.root.configure(background=palette.bg)
+        self.menu_bar.configure(background=palette.menu_bar_bg)
+        for button in self.menu_buttons.values():
+            button.configure(background=palette.menu_bar_bg, foreground=palette.fg,
+                             activebackground=palette.menu_active_bg,
+                             activeforeground=palette.menu_active_fg)
+        for menu in self.menus:
+            menu.configure(background=palette.menu_bg, foreground=palette.menu_fg,
+                           activebackground=palette.menu_active_bg,
+                           activeforeground=palette.menu_active_fg,
+                           selectcolor=palette.menu_fg)
+        self.hint.configure(foreground=palette.muted)
+        self.tree.tag_configure("done", foreground=palette.done_fg, font=self._done_font)
+
+        # Hold the old images until refresh() has pointed every row at the new ones:
+        # dropping the last reference deletes the Tk image immediately.
+        old_images = (getattr(self, "img_on", None), getattr(self, "img_off", None))
+        self.img_on = make_checkbox_image(self.root, self._box, True, palette)
+        self.img_off = make_checkbox_image(self.root, self._box, False, palette)
+        self.theme_var.set(self.theme_mode)
+        theme.set_title_bar_dark(self.root, self.theme == "dark")
+        self.refresh()
+        del old_images
+
+    @staticmethod
+    def _style_dark(style, p):
+        style.configure(".", background=p.bg, foreground=p.fg, fieldbackground=p.field,
+                        bordercolor=p.border, lightcolor=p.bg, darkcolor=p.bg,
+                        troughcolor=p.field, selectbackground=p.select_bg,
+                        selectforeground=p.select_fg, insertcolor=p.fg, arrowcolor=p.fg,
+                        focuscolor=p.select_bg)
+        style.configure("Treeview", background=p.field, fieldbackground=p.field,
+                        foreground=p.fg, bordercolor=p.border)
+        style.map("Treeview", background=[("selected", p.select_bg)],
+                  foreground=[("selected", p.select_fg)])
+        style.configure("Treeview.Heading", background=p.heading_bg, foreground=p.fg,
+                        bordercolor=p.border, lightcolor=p.heading_bg, darkcolor=p.heading_bg)
+        style.map("Treeview.Heading", background=[("active", p.border)])
+        style.configure("TEntry", fieldbackground=p.field, foreground=p.fg, insertcolor=p.fg,
+                        bordercolor=p.border, lightcolor=p.field, darkcolor=p.field)
+        style.map("TEntry", bordercolor=[("focus", p.select_bg)],
+                  lightcolor=[("focus", p.select_bg)])
+        style.configure("TButton", background=p.field, foreground=p.fg, bordercolor=p.border,
+                        lightcolor=p.field, darkcolor=p.field)
+        style.map("TButton", background=[("pressed", p.bg), ("active", p.border)])
+        style.configure("Horizontal.TProgressbar", background=p.accent, troughcolor=p.field,
+                        bordercolor=p.border, lightcolor=p.accent, darkcolor=p.accent)
+        style.configure("Vertical.TScrollbar", background=p.field, troughcolor=p.bg,
+                        bordercolor=p.bg, arrowcolor=p.muted, lightcolor=p.field,
+                        darkcolor=p.field)
+        style.map("Vertical.TScrollbar", background=[("active", p.border)])
+
+    def on_focus_in(self, event):
+        if self.theme_mode != "system":
+            return
+        if theme.resolve("system", theme.system_prefers_dark()) != self.theme:
+            self.apply_theme()
+
+    def _on_map(self, event):
+        # Before the first map the window has no frame to recolor.
+        if str(event.widget) == str(self.root):
+            theme.set_title_bar_dark(self.root, self.theme == "dark")
 
     # ---- rendering -------------------------------------------------------
 
@@ -417,7 +531,7 @@ class App:
         finally:
             self.item_menu.grab_release()
 
-    # ---- files ---------------------------------------------------------------
+    # ---- keyboard ------------------------------------------------------------
 
     def on_ctrl_key(self, event):
         if event.state & ALT_MASK:
@@ -438,6 +552,25 @@ class App:
             return None
         action()
         return "break"
+
+    def on_alt_key(self, event):
+        if event.state & CONTROL_MASK or sys.platform != "win32":
+            return None  # AltGr (Ctrl+Alt) types characters such as ą or @.
+        key = WIN_ALT_KEYCODES.get(event.keycode)
+        if key is None:
+            return None  # leaves Alt+F4 and friends to Windows
+        self.open_menu(key)
+        return "break"
+
+    def on_f10(self, event):
+        self.open_menu("file")
+        return "break"
+
+    def open_menu(self, key):
+        self.end_edit(True)
+        self.menu_buttons[key].event_generate("<<Invoke>>")
+
+    # ---- files ---------------------------------------------------------------
 
     def _confirm_discard(self):
         self.end_edit(True)
@@ -538,6 +671,7 @@ class App:
             f"{APP_NAME} {__version__}\n"
             "Чек-лист: впишите пункты и отмечайте выполненные.\n\n"
             f"Режим: {mode}\n"
+            f"Тема: {theme.MODE_LABELS[self.theme_mode]}\n"
             f"Настройки: {self.paths.settings_file}\n"
             f"Папка списков: {self.paths.lists_dir}",
             parent=self.root)

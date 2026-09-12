@@ -152,6 +152,28 @@ class RealEventTests(unittest.TestCase):
         self.assertEqual(self.texts(), "abcde")
         self.assertEqual(self.app.entry.get(), "y")
 
+    def generate_key(self, sequence, keycode):
+        self.app.entry.focus_force()
+        self.top.update()
+        with mock.patch.object(self.app, "open_menu") as open_menu:
+            self.app.entry.event_generate(sequence, keycode=keycode)
+            self.top.update()
+        return open_menu
+
+    @unittest.skipUnless(os.name == "nt", "keycodes are Windows virtual-key codes")
+    def test_alt_key_event_reaches_menu_handler(self):
+        open_menu = self.generate_key("<Alt-KeyPress-d>", 68)
+        open_menu.assert_called_once_with("view")
+
+    @unittest.skipUnless(os.name == "nt", "keycodes are Windows virtual-key codes")
+    def test_alt_key_does_not_type_into_entry(self):
+        self.generate_key("<Alt-KeyPress-d>", 68)
+        self.assertEqual(self.app.entry.get(), "")
+
+    def test_f10_event_reaches_menu_handler(self):
+        open_menu = self.generate_key("<KeyPress-F10>", 121)
+        open_menu.assert_called_once_with("file")
+
 
 if __name__ == "__main__":
     unittest.main()
