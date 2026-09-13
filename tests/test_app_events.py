@@ -234,6 +234,73 @@ class RealEventTests(unittest.TestCase):
         open_file.assert_called_once()
         self.assertEqual(self.app.note_text.get("1.0", "end-1c"), "")
 
+    def with_note(self, index, note):
+        self.app.checklist.set_note(index, note)
+        self.app.refresh()
+        self.top.update()
+
+    def test_click_on_arrow_expands_and_collapses(self):
+        self.with_note(1, "первая\nвторая")
+        self.click_at(self.center(1, "note"), 10_000)
+        self.assertTrue(self.app.checklist.items[1].expanded)
+        self.assertEqual(len(self.tree.get_children("1")), 2)
+        self.click_at(self.center(1, "note"), 20_000)
+        self.assertFalse(self.app.checklist.items[1].expanded)
+        self.assertEqual(self.tree.get_children("1"), ())
+
+    def test_click_on_empty_arrow_cell_selects_row(self):
+        self.click_at(self.center(2, "note"), 10_000)
+        self.assertEqual(self.app.selected_index(), 2)
+        self.assertEqual(self.texts(), "abcde")
+
+    def test_click_on_note_line_selects_its_item(self):
+        self.with_note(0, "заметка")
+        self.app.set_expanded(0, True)
+        self.app.select(3)
+        self.top.update()
+        self.click_at(self.center("0.0", "text"), 10_000)
+        self.assertEqual(self.app.selected_index(), 0)
+        self.assertEqual(self.tree.selection(), ("0",))
+
+    def test_double_click_on_note_line_focuses_panel(self):
+        self.with_note(0, "заметка")
+        self.app.set_expanded(0, True)
+        self.top.update()
+        xy = self.center("0.0", "text")
+        self.click_at(xy, 10_000)
+        self.click_at(xy, 10_100)
+        self.assertIsNone(self.app.editor)
+        self.assertEqual(self.top.focus_get(), self.app.note_text)
+        self.assertEqual(self.app.note_index, 0)
+
+    def test_arrow_keys_skip_note_lines_and_expand(self):
+        self.with_note(0, "заметка")
+        self.app.select(0)
+        self.tree.focus_force()
+        self.top.update()
+        for key, expected in (("<Right>", True), ("<Down>", None), ("<Up>", None),
+                              ("<Left>", False)):
+            self.tree.event_generate(key)
+            self.top.update()
+            if expected is not None:
+                self.assertEqual(self.app.checklist.items[0].expanded, expected)
+        self.assertEqual(self.app.selected_index(), 0)
+        self.app.set_expanded(0, True)
+        self.tree.event_generate("<Down>")
+        self.top.update()
+        self.assertEqual(self.app.selected_index(), 1)
+
+    def test_drag_over_note_lines_moves_item(self):
+        self.with_note(1, "заметка")
+        self.app.set_expanded(1, True)
+        self.top.update()
+        target = self.center("1.0", "text")  # row "1.0" is renamed "0.0" by the move
+        self.send("<ButtonPress-1>", self.center(0, "text"))
+        self.send("<B1-Motion>", target)
+        self.send("<ButtonRelease-1>", target)
+        self.assertEqual(self.texts(), "bacde")
+        self.assertEqual(self.tree.get_children("0"), ("0.0",))  # the note moved with b
+
     def paste_with(self, widget, keysym):
         self.root.clipboard_clear()
         self.root.clipboard_append("буфер")

@@ -1,7 +1,7 @@
 import json
 import os
 import tempfile
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 
 FORMAT_VERSION = 1
 
@@ -15,6 +15,10 @@ class Item:
     text: str
     done: bool = False
     note: str = ""
+    # View state: the note is shown under the row. Kept on the Item so that
+    # replace() carries it through toggle/rename/set_note and it moves with the
+    # item; it is not saved, not compared, and does not make the list dirty.
+    expanded: bool = field(default=False, compare=False)
 
 
 _SURROGATES = {cp: None for cp in range(0xD800, 0xE000)}
@@ -132,6 +136,14 @@ class Checklist:
         self._items[index] = replace(item, note=note)
         self.dirty = True
         return True
+
+    def set_expanded(self, index, expanded):
+        self._check_index(index)
+        item = self._items[index]
+        if item.expanded == bool(expanded):
+            return False
+        self._items[index] = replace(item, expanded=bool(expanded))
+        return True  # view state only: dirty stays as it was
 
     def remove(self, index):
         self._check_index(index)

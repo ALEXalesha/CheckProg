@@ -27,7 +27,14 @@ ALT_MASK = 0x20000 if sys.platform == "win32" else 0x0008
 CONTROL_MASK = 0x0004
 ICON_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icon.ico")
 CHECK_COLUMN = "#0"
-NOTE_MARK = "✎"
+NOTE_COLUMN = "#2"
+NOTE_HEADING = "✎"
+# Arrow in the note column of items that have a note: collapsed / expanded.
+# The full-size triangles: ▾ ▴ and ⏷ ⏶ are barely visible next to 11 pt text.
+NOTE_MARK = "▼"
+NOTE_OPEN_MARK = "▲"
+VIEW_THEME_LABELS = {"system": "Тема как в системе", "light": "Светлая тема",
+                     "dark": "Тёмная тема"}
 # Windows gives Tk 9 pt Segoe UI, which reads small. An absolute size (not +2)
 # keeps a second App on the same Tk from growing the fonts again.
 UI_FONT_SIZE = 11
@@ -87,6 +94,12 @@ class App:
         self.note_index = None
         self._note_item = None
         self._palette = None
+        # Expanded notes are child rows "<i>.<k>" of row "<i>"; this remembers what
+        # each row currently shows so refresh() only rebuilds rows that changed.
+        self._note_rows = {}
+        self._wrap_cache = {}
+        self._wrap_width = None
+        self._rewrap_job = None
         self.theme_mode = theme.normalize_mode(self.settings.get("theme"))
         self.theme = None
         self.theme_var = tk.StringVar(master=root, value=self.theme_mode)
@@ -127,6 +140,9 @@ class App:
         # Keep a reference: Tk deletes the named font when the Python object is collected.
         self._done_font = base_font.copy()
         self._done_font.configure(overstrike=1)
+        self._note_font = base_font.copy()
+        self._note_font.configure(slant="italic", size=UI_FONT_SIZE - 1)
+        self._scale = scale
         self._box = max(12, linespace - 2)
         # ttk rows have a fixed pixel height; derive it from the font so text is not
         # clipped at 125-200% display scaling.
@@ -151,6 +167,7 @@ class App:
         self.hint = ttk.Label(
             bottom,
             text="Щелчок по квадратику: отметить  •  двойной щелчок: изменить  •  "
+                 f"{NOTE_MARK} справа: показать комментарий  •  "
                  "повторный щелчок или Esc: снять выделение  •  "
                  "Delete: удалить  •  перетащите строку, чтобы переставить")
         self.hint.pack(fill="x", pady=(6, 0))
@@ -179,7 +196,7 @@ class App:
                                  selectmode="browse")
         self.tree.heading(CHECK_COLUMN, text="✓")
         self.tree.heading("text", text="Пункт", anchor="w")
-        self.tree.heading("note", text=NOTE_MARK)
+        self.tree.heading("note", text=NOTE_HEADING)
         check_width = self._box + round(20 * scale)
         self.tree.column(CHECK_COLUMN, width=check_width, minwidth=check_width, stretch=False)
         self.tree.column("text", anchor="w", stretch=True)
@@ -234,13 +251,18 @@ class App:
 
         self._fill_item_menu(add("item", "Пункт"))
 
+        # No "Тема" submenu: next to the long comment commands it would not fit to
+        # the right of "Вид" in a normal-sized window and would cover it.
         view_menu = add("view", "Вид")
-        theme_menu = self._new_menu(view_menu)
         for mode in theme.MODES:
-            theme_menu.add_radiobutton(label=theme.MODE_LABELS[mode], value=mode,
-                                       variable=self.theme_var,
-                                       command=lambda m=mode: self.set_theme_mode(m))
-        view_menu.add_cascade(label="Тема", menu=theme_menu)
+            view_menu.add_radiobutton(label=VIEW_THEME_LABELS[mode], value=mode,
+                                      variable=self.theme_var,
+                                      command=lambda m=mode: self.set_theme_mode(m))
+        view_menu.add_separator()
+        view_menu.add_command(label="Развернуть все комментарии",
+                              command=lambda: self.expand_all(True))
+        view_menu.add_command(label="Свернуть все комментарии",
+                              command=lambda: self.expand_all(False))
 
         help_menu = add("help", "Справка")
         help_menu.add_command(label="О программе", command=self.show_about)
@@ -264,8 +286,13 @@ class App:
         tree.bind("<ButtonRelease-1>", self._on_release)
         tree.bind("<Double-Button-1>", self._on_double)
         tree.bind("<Button-3>", self._on_right_click)
-        tree.bind("<<TreeviewSelect>>", lambda e: self._sync_note_panel())
+        tree.bind("<<TreeviewSelect>>", lambda e: self._on_tree_select())
         tree.bind("<Escape>", lambda e: self._key(self.deselect))
+        # Own arrow handling: the Treeview's would step into note lines.
+        tree.bind("<Up>", lambda e: self._step_selection(-1))
+        tree.bind("<Down>", lambda e: self._step_selection(1))
+        tree.bind("<Right>", lambda e: self._key(lambda: self._expand_selected(True)))
+        tree.bind("<Left>", lambda e: self._key(lambda: self._expand_selected(False)))
         tree.bind("<Shift-F10>", self._on_menu_key)
         if sys.platform == "win32":
             tree.bind("<KeyPress-App>", self._on_menu_key)
@@ -277,7 +304,7 @@ class App:
         # The inline editor is placed in tree pixels; scrolling or resizing would
         # leave it over the wrong row, so finish the edit first.
         tree.bind("<MouseWheel>", lambda e: self.end_edit(True))
-        tree.bind("<Configure>", lambda e: self.end_edit(True))
+        tree.bind("<Configure>", self._on_tree_configure)
         self.entry.bind("<Return>", lambda e: self._key(self.add_item))
         self.entry.bind("<KP_Enter>", lambda e: self._key(self.add_item))
         self.note_text.bind("<<Modified>>", self._on_note_modified)
@@ -329,6 +356,7 @@ class App:
                            acceleratorforeground=palette.muted)
         self.hint.configure(foreground=palette.muted)
         self.tree.tag_configure("done", foreground=palette.done_fg, font=self._done_font)
+        self.tree.tag_configure("noteline", foreground=palette.muted, font=self._note_font)
         self._palette = palette
         self._paint_note_panel()
 
@@ -391,18 +419,27 @@ class App:
         # scroll position survives a toggle.
         existing = tree.get_children()
         if len(existing) > len(items):
-            tree.delete(*existing[len(items):])
+            tree.delete(*existing[len(items):])  # their note lines go with them
+            for iid in existing[len(items):]:
+                self._note_rows.pop(iid, None)
+        width = self._note_width()
         for i, item in enumerate(items):
             iid = str(i)
+            shown = bool(item.note) and item.expanded
+            mark = (NOTE_OPEN_MARK if shown else NOTE_MARK) if item.note else ""
             options = {
                 "image": self.img_on if item.done else self.img_off,
-                "values": (item.text, NOTE_MARK if item.note else ""),
+                "values": (item.text, mark),
                 "tags": ("done",) if item.done else (),
+                "open": shown,
             }
             if tree.exists(iid):
                 tree.item(iid, **options)
             else:
                 tree.insert("", "end", iid=iid, **options)
+            lines = self._wrap_note(item.note, width) if shown else ()
+            if self._note_rows.get(iid, ()) != lines:
+                self._set_note_rows(iid, lines)
         if select is not None:
             self.select(select)
 
@@ -430,7 +467,145 @@ class App:
 
     def selected_index(self):
         selection = self.tree.selection()
-        return int(selection[0]) if selection else None
+        return self._index_of(selection[0]) if selection else None
+
+    @staticmethod
+    def _index_of(iid):
+        return int(iid.split(".", 1)[0])  # "3" is item 3, "3.1" a note line of item 3
+
+    @staticmethod
+    def _is_note_row(iid):
+        return "." in iid
+
+    def _on_tree_select(self):
+        selection = self.tree.selection()
+        if selection and self._is_note_row(selection[0]):
+            self.select(self._index_of(selection[0]))  # a note line stands for its item
+            return
+        self._sync_note_panel()
+
+    def _step_selection(self, delta):
+        count = len(self.checklist)
+        if count:
+            index = self.selected_index()
+            if index is None:
+                target = 0 if delta > 0 else count - 1
+            else:
+                target = max(0, min(count - 1, index + delta))
+            self.end_edit(True)
+            self.select(target)
+        return "break"
+
+    # ---- notes under rows --------------------------------------------------
+
+    def _note_width(self):
+        width = int(self.tree.column("text", "width")) - round(14 * self._scale)
+        return max(40, width)
+
+    def _wrap_note(self, note, width):
+        """Splits a note into lines that fit the text column (Treeview cannot wrap)."""
+        key = (note, width)
+        cached = self._wrap_cache.get(key)
+        if cached is not None:
+            return cached
+        measure = self._note_font.measure
+        lines = []
+        for paragraph in note.split("\n"):
+            line = ""
+            for word in paragraph.split():
+                while len(word) > 1 and measure(word) > width:
+                    # A word wider than the column is cut at the widest prefix that fits.
+                    lo, hi = 1, len(word) - 1
+                    while lo < hi:
+                        mid = (lo + hi + 1) // 2
+                        if measure(word[:mid]) <= width:
+                            lo = mid
+                        else:
+                            hi = mid - 1
+                    if line:
+                        lines.append(line)
+                        line = ""
+                    lines.append(word[:lo])
+                    word = word[lo:]
+                candidate = f"{line} {word}" if line else word
+                if line and measure(candidate) > width:
+                    lines.append(line)
+                    line = word
+                else:
+                    line = candidate
+            lines.append(line)
+        if len(self._wrap_cache) > 5000:
+            self._wrap_cache.clear()
+        result = self._wrap_cache[key] = tuple(lines)
+        return result
+
+    def _set_note_rows(self, iid, lines):
+        tree = self.tree
+        children = tree.get_children(iid)
+        if children:
+            tree.delete(*children)
+        for k, line in enumerate(lines):
+            tree.insert(iid, "end", iid=f"{iid}.{k}", values=(line, ""), tags=("noteline",))
+        if lines:
+            self._note_rows[iid] = lines
+        else:
+            self._note_rows.pop(iid, None)
+
+    def _on_tree_configure(self, event):
+        self.end_edit(True)
+        width = self._note_width()
+        if width == self._wrap_width:
+            return
+        self._wrap_width = width
+        if self._rewrap_job is None and self._note_rows:
+            # after_idle: the column width settles only once the resize is laid out.
+            self._rewrap_job = self.root.after_idle(self._rewrap)
+
+    def _rewrap(self):
+        self._rewrap_job = None
+        if self.tree.winfo_exists():
+            self.refresh()
+
+    def set_expanded(self, index, expanded):
+        self.end_edit(True)
+        items = self.checklist.items
+        if not 0 <= index < len(items) or not items[index].note:
+            return False
+        old = items[index]
+        if not self.checklist.set_expanded(index, expanded):
+            return False
+        if self._note_item is old:
+            self._note_item = self.checklist.items[index]  # keep the panel bound to it
+        self.refresh()
+        if expanded:
+            lines = self.tree.get_children(str(index))
+            if lines:
+                self.tree.see(lines[-1])  # show the whole note, then the item itself
+            self.tree.see(str(index))
+        return True
+
+    def toggle_expanded(self, index):
+        items = self.checklist.items
+        if 0 <= index < len(items):
+            return self.set_expanded(index, not items[index].expanded)
+        return False
+
+    def _expand_selected(self, expanded):
+        index = self.selected_index()
+        if index is not None:
+            self.set_expanded(index, expanded)
+
+    def expand_all(self, expanded):
+        self.end_edit(True)
+        changed = False
+        for i, item in enumerate(self.checklist.items):
+            if item.note and item.expanded != expanded:
+                self.checklist.set_expanded(i, expanded)
+                if self._note_item is item:
+                    self._note_item = self.checklist.items[i]
+                changed = True
+        if changed:
+            self.refresh()
 
     # ---- note panel ------------------------------------------------------
 
@@ -626,11 +801,14 @@ class App:
 
     # ---- mouse --------------------------------------------------------------
 
-    def _row_under(self, event):
+    def _iid_under(self, event):
         if self.tree.identify_region(event.x, event.y) not in ("cell", "tree"):
             return None
-        row = self.tree.identify_row(event.y)
-        return int(row) if row else None
+        return self.tree.identify_row(event.y) or None
+
+    def _row_under(self, event):
+        iid = self._iid_under(event)
+        return self._index_of(iid) if iid else None
 
     def _on_press(self, event):
         self._click_toggle = False
@@ -638,12 +816,26 @@ class App:
             self.deselect()  # empty space below the rows
             self.tree.focus_set()
             return "break"
-        index = self._row_under(event)
-        if index is None:
+        iid = self._iid_under(event)
+        if iid is None:
             return None
-        if self.tree.identify_column(event.x) == CHECK_COLUMN:
+        index = self._index_of(iid)
+        column = self.tree.identify_column(event.x)
+        if self._is_note_row(iid):
+            # A note line acts for its item; the line itself is never selected.
+            self._click_toggle = index == self.selected_index()
+            self.drag_start(index)
+            if not self._click_toggle:
+                self.select(index)
+            self.tree.focus_set()
+            return "break"
+        if column == CHECK_COLUMN:
             self.toggle_index(index)
             self.select(index)
+            self.tree.focus_set()
+            return "break"
+        if column == NOTE_COLUMN and self.checklist.items[index].note:
+            self.toggle_expanded(index)
             self.tree.focus_set()
             return "break"
         # Decided on release: pressing a selected row may still start a drag.
@@ -673,7 +865,7 @@ class App:
     def _row_at_y(self, y):
         row = self.tree.identify_row(y)
         if row:
-            return int(row)
+            return self._index_of(row)
         visible = [iid for iid in self.tree.get_children() if self.tree.bbox(iid)]
         if not visible:
             return None
@@ -682,13 +874,20 @@ class App:
 
     def _on_double(self, event):
         self._click_toggle = False
-        index = self._row_under(event)
-        if index is None:
+        iid = self._iid_under(event)
+        if iid is None:
             return None
-        if self.tree.identify_column(event.x) == CHECK_COLUMN:
+        index = self._index_of(iid)
+        column = self.tree.identify_column(event.x)
+        if self._is_note_row(iid):
+            self.select(index)
+            self.edit_note()  # double click on a note line: edit the note
+        elif column == CHECK_COLUMN:
             # The second click of a double click lands here instead of <ButtonPress-1>.
             self.toggle_index(index)
             self.select(index)
+        elif column == NOTE_COLUMN and self.checklist.items[index].note:
+            self.toggle_expanded(index)  # same rule as the checkbox: two clicks, two toggles
         else:
             self.begin_edit(index)
         return "break"
@@ -698,7 +897,7 @@ class App:
         if not row:
             return
         self.end_edit(True)
-        self.select(int(row))
+        self.select(self._index_of(row))
         self.tree.focus_set()
         self.menu_system.popup(self.item_menu, event.x_root, event.y_root)
 

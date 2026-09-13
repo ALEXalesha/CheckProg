@@ -208,12 +208,14 @@ class MenuKeyboardTests(ThemeTestCase):
         self.assertEqual(self.texts(), ["ab"])
 
     def test_theme_menu_items_switch_mode(self):
-        submenu = self.app.bar_menus["view"].entrycget(0, "menu")
-        labels = [submenu.entrycget(i, "label") for i in range(submenu.index("end") + 1)]
-        self.assertEqual(labels, [theme.MODE_LABELS[m] for m in theme.MODES])
-        submenu.invoke(2)
+        view = self.app.bar_menus["view"]
+        radios = [i for i in range(view.index("end") + 1) if view.type(i) == "radiobutton"]
+        self.assertEqual([view.entrycget(i, "value") for i in radios], list(theme.MODES))
+        self.assertEqual([view.entrycget(i, "label") for i in radios],
+                         [app_module.VIEW_THEME_LABELS[m] for m in theme.MODES])
+        view.invoke(radios[2])
         self.assertEqual(self.app.theme_mode, "dark")
-        submenu.invoke(1)
+        view.invoke(radios[1])
         self.assertEqual(self.app.theme_mode, "light")
 
 

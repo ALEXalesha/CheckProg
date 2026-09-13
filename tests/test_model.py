@@ -479,5 +479,43 @@ class NoteTests(TmpDirTestCase):
         self.assertEqual(Checklist.load(p).items[0], Item("a", True, ""))
 
 
+class ExpandedTests(TmpDirTestCase):
+    def test_expanded_is_view_state(self):
+        cl = make("a")
+        cl.dirty = False
+        self.assertTrue(cl.set_expanded(0, True))
+        self.assertFalse(cl.set_expanded(0, True))
+        self.assertTrue(cl.items[0].expanded)
+        self.assertFalse(cl.dirty)
+        self.assertEqual(cl.items[0], Item("a"))  # ignored by ==
+
+    def test_expanded_survives_edits_and_moves(self):
+        cl = make("a", "b")
+        cl.set_note(0, "N")
+        cl.set_expanded(0, True)
+        cl.toggle(0)
+        cl.rename(0, "aa")
+        cl.set_note(0, "N2")
+        cl.move(0, 1)
+        self.assertTrue(cl.items[1].expanded)
+        self.assertFalse(cl.items[0].expanded)
+
+    def test_expanded_is_not_saved(self):
+        cl = make("a")
+        cl.set_note(0, "N")
+        cl.set_expanded(0, True)
+        cl.save(self.path())
+        with open(self.path(), encoding="utf-8") as f:
+            self.assertNotIn("expanded", f.read())
+        self.assertFalse(Checklist.load(self.path()).items[0].expanded)
+
+    def test_expanded_bad_index(self):
+        cl = make("a")
+        with self.assertRaises(IndexError):
+            cl.set_expanded(1, True)
+        with self.assertRaises(TypeError):
+            cl.set_expanded("0", True)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -61,8 +61,12 @@ class AppTestCase(unittest.TestCase):
 
     def assert_in_sync(self):
         cl = self.app.checklist
-        self.assertEqual(self.rows(), [(it.text, app_module.NOTE_MARK if it.note else "")
-                                       for it in cl.items])
+        def mark(it):
+            if not it.note:
+                return ""
+            return app_module.NOTE_OPEN_MARK if it.expanded else app_module.NOTE_MARK
+
+        self.assertEqual(self.rows(), [(it.text, mark(it)) for it in cl.items])
         self.assertEqual(list(self.app.tree.get_children()),
                          [str(i) for i in range(len(cl))])
         self.assertEqual([self.checked(i) for i in range(len(cl))],

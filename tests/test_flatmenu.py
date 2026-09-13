@@ -8,6 +8,7 @@ from unittest import mock
 from checkprog import app as app_module
 from checkprog import theme
 from checkprog.app import CHECK_COLUMN, App
+from checkprog.flatmenu import FlatMenu
 from checkprog.settings import Paths
 from tests.tkroot import shared_root
 
@@ -78,6 +79,25 @@ class FlatMenuTestCase(unittest.TestCase):
 
     def labels(self, menu):
         return [e.get("label") for e in menu.entries]
+
+    def cascade_menu(self):
+        """The app has no submenus any more; this one exercises cascade support."""
+        self.choice = tk.StringVar(master=self.top, value="b")
+        sub = FlatMenu(self.ms)
+        for value in "abc":
+            sub.add_radiobutton(label=f"Вариант {value}", value=value, variable=self.choice)
+        menu = FlatMenu(self.ms)
+        menu.add_cascade(label="Выбор", menu=sub)
+        menu.add_command(label="Команда")
+        for m in (menu, sub):
+            m.configure(**self.app.item_menu.colors)
+        return menu, sub
+
+    def popup_cascade(self, x=40, y=120, keyboard=True):
+        menu, sub = self.cascade_menu()
+        self.ms.popup(menu, self.top.winfo_rootx() + x, self.top.winfo_rooty() + y,
+                      keyboard=keyboard)
+        return menu, sub
 
 
 class OpenCloseTests(FlatMenuTestCase):
@@ -171,12 +191,8 @@ class KeyboardTests(FlatMenuTestCase):
         self.key("Left")
         self.assertEqual(self.ms.bar_key, "help")  # wraps like Windows
 
-    def test_theme_submenu_by_keyboard(self):
+    def test_theme_by_keyboard(self):
         self.app.open_menu("view")
-        self.key("Right")  # "Тема" is a cascade: opens it
-        self.assertEqual(len(self.ms.chain), 2)
-        sub = self.ms.chain[1]
-        self.assertEqual(sub.active, 0)
         self.key("Down")
         self.key("Down")
         self.key("Return")
@@ -184,22 +200,37 @@ class KeyboardTests(FlatMenuTestCase):
         self.assertFalse(self.ms.is_open)
         self.app.set_theme_mode("light")
 
+    def test_view_menu_has_no_submenu(self):
+        view = self.app.bar_menus["view"]
+        self.assertNotIn("cascade", [view.type(i) for i in range(view.index("end") + 1)])
+
+    def test_submenu_by_keyboard(self):
+        menu, sub = self.popup_cascade()
+        self.key("Right")  # "Выбор" is a cascade: opens it
+        self.assertEqual(self.ms.chain, [menu, sub])
+        self.assertEqual(sub.active, 0)
+        self.key("Down")
+        self.key("Down")
+        self.key("Return")
+        self.assertEqual(self.choice.get(), "c")
+        self.assertFalse(self.ms.is_open)
+
     def test_left_closes_submenu_only(self):
-        self.app.open_menu("view")
+        menu, sub = self.popup_cascade()
         self.key("Return")
         self.assertEqual(len(self.ms.chain), 2)
         self.key("Left")
-        self.assertEqual(len(self.ms.chain), 1)
-        self.assertIsNone(self.app.bar_menus["view"].entries[0]["menu"].frame)
+        self.assertEqual(self.ms.chain, [menu])
+        self.assertIsNone(sub.frame)
         self.key("Escape")
         self.assertFalse(self.ms.is_open)
 
     def test_radio_mark_shows_current_theme(self):
         self.app.set_theme_mode("dark")
         self.app.open_menu("view")
-        self.key("Right")
-        sub = self.ms.chain[1]
-        marks = [sub.rows[i][0].cget("text") for i in sorted(sub.rows)]
+        view = self.app.bar_menus["view"]
+        marks = [view.rows[i][0].cget("text") for i in sorted(view.rows)
+                 if view.type(i) == "radiobutton"]
         self.assertEqual(marks, ["", "", "●"])
         self.ms.close()
         self.app.set_theme_mode("light")
@@ -266,18 +297,33 @@ class PointerTests(FlatMenuTestCase):
         self.assertEqual(self.ms.bar_key, "help")
 
     def test_hover_on_cascade_opens_submenu_and_elsewhere_closes_it(self):
-        self.app.open_menu("view")
-        menu = self.app.bar_menus["view"]
+        menu, sub = self.popup_cascade(keyboard=False)
         self.pointer("<Motion>", self.row_xy(menu, 0))
-        self.assertEqual(len(self.ms.chain), 2)
-        sub = self.ms.chain[1]
+        self.assertEqual(self.ms.chain, [menu, sub])
         self.assertGreaterEqual(sub.frame.winfo_rootx() + 4,
                                 menu.frame.winfo_rootx() + menu.frame.winfo_width())
-        self.pointer("<Motion>", self.row_xy(sub, 1))
-        self.assertEqual(sub.active, 1)
-        self.pointer("<ButtonRelease-1>", self.row_xy(sub, 1))
-        self.assertEqual(self.app.theme_mode, "light")
+        self.pointer("<Motion>", self.row_xy(menu, 1))  # plain entry: submenu closes
+        self.assertEqual(self.ms.chain, [menu])
+        self.pointer("<Motion>", self.row_xy(menu, 0))
+        sub_row = self.row_xy(sub, 0)
+        self.pointer("<Motion>", sub_row)
+        self.assertEqual(sub.active, 0)
+        self.pointer("<ButtonRelease-1>", sub_row)
+        self.assertEqual(self.choice.get(), "a")
         self.assertFalse(self.ms.is_open)
+
+    def test_submenu_without_room_on_either_side_takes_the_wider_one(self):
+        self.top.geometry("300x620")
+        self.top.update()
+        menu, sub = self.popup_cascade(x=20)
+        self.key("Right")
+        room_right = self.top.winfo_rootx() + self.top.winfo_width() - (
+            menu.frame.winfo_rootx() + menu.frame.winfo_width())
+        room_left = menu.frame.winfo_rootx() - self.top.winfo_rootx()
+        if room_right >= room_left:
+            self.assertGreater(sub.frame.winfo_rootx(), menu.frame.winfo_rootx())
+        self.assertLessEqual(sub.frame.winfo_rootx() + sub.frame.winfo_width(),
+                             self.top.winfo_rootx() + self.top.winfo_width())
 
     def test_click_outside_only_closes(self):
         # "Справка" opens far to the right, so the checkbox column stays uncovered.
@@ -326,14 +372,9 @@ class PopupTests(FlatMenuTestCase):
         self.assertGreaterEqual(frame.winfo_rootx(), self.top.winfo_rootx())
 
     def test_submenu_flips_left_near_right_edge(self):
-        self.top.geometry("360x620")
-        self.top.update()
-        view = self.app.bar_menus["view"]
-        self.ms.popup(view, self.top.winfo_rootx() + 300, self.top.winfo_rooty() + 100)
-        view.activate(0)
-        self.ms._open_sub(0, keyboard=True)
-        sub = self.ms.chain[1]
-        self.assertLess(sub.frame.winfo_rootx(), view.frame.winfo_rootx())
+        menu, sub = self.popup_cascade(x=self.top.winfo_width() - 5)
+        self.key("Right")
+        self.assertLess(sub.frame.winfo_rootx(), menu.frame.winfo_rootx())
 
     def test_shift_f10_opens_item_menu_with_keyboard(self):
         self.app.select(0)

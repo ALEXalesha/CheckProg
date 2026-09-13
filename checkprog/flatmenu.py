@@ -147,7 +147,9 @@ class FlatMenu:
         width, height = outer.winfo_reqwidth(), outer.winfo_reqheight()
         room_w, room_h = s.root.winfo_width(), s.root.winfo_height()
         if x + width > room_w and flip_x is not None:
-            x = flip_x - width
+            # Too wide for the right side: go left, unless the left has even less room.
+            if flip_x - width >= 0 or flip_x > room_w - x:
+                x = flip_x - width
         x = max(0, min(x, room_w - width))
         y = max(0, min(y, room_h - height))
         outer.place(x=x, y=y)

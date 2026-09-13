@@ -1,5 +1,6 @@
 import tkinter as tk
 import unittest
+import unittest.mock
 
 from checkprog import app as app_module
 from checkprog import theme
@@ -227,6 +228,137 @@ class NotePanelTests(NoteTestCase):
         self.assertEqual(self.rows()[0][1], "")
 
 
+class ExpandTests(NoteTestCase):
+    def kids(self, index):
+        tree = self.app.tree
+        return [str(tree.item(k, "values")[0]) for k in tree.get_children(str(index))]
+
+    def with_notes(self, *notes):
+        self.add(*(f"п{i}" for i in range(len(notes))))
+        for i, note in enumerate(notes):
+            self.app.checklist.set_note(i, note)
+        self.app.refresh()
+
+    def test_arrow_only_for_items_with_notes(self):
+        self.with_notes("есть", "")
+        self.assertEqual([r[1] for r in self.rows()], [app_module.NOTE_MARK, ""])
+        self.assertFalse(self.app.set_expanded(1, True))
+        self.assertEqual(self.kids(1), [])
+
+    def test_expand_shows_lines_and_collapse_hides(self):
+        self.with_notes("раз\nдва", "")
+        self.app.checklist.dirty = False
+        self.app.refresh()
+        self.assertTrue(self.app.set_expanded(0, True))
+        self.assertEqual(self.kids(0), ["раз", "два"])
+        self.assertEqual(self.rows()[0][1], app_module.NOTE_OPEN_MARK)
+        self.assertFalse(self.app.checklist.dirty)  # view state only
+        self.assert_in_sync()  # top-level rows are still exactly the items
+        self.app.set_expanded(0, False)
+        self.assertEqual(self.kids(0), [])
+        self.assertEqual(self.rows()[0][1], app_module.NOTE_MARK)
+
+    def test_typing_in_panel_updates_open_lines(self):
+        self.with_notes("старое")
+        self.app.set_expanded(0, True)
+        self.app.select(0)
+        self.app.note_text.delete("1.0", "end")
+        self.type_note("новое\nвторая")
+        self.assertEqual(self.kids(0), ["новое", "вторая"])
+
+    def test_clearing_note_hides_lines_and_arrow(self):
+        self.with_notes("x")
+        self.app.set_expanded(0, True)
+        self.app.select(0)
+        self.app.note_text.delete("1.0", "end")
+        self.top.update()
+        self.assertEqual(self.kids(0), [])
+        self.assertEqual(self.rows()[0][1], "")
+
+    def test_lines_follow_item_on_move_and_delete(self):
+        self.with_notes("A", "B", "")
+        self.app.set_expanded(0, True)
+        self.app.select(0)
+        self.app.move_selected(1)
+        self.assertEqual((self.kids(0), self.kids(1)), ([], ["A"]))
+        self.app.select(0)
+        self.app.delete_selected()
+        self.assertEqual((self.kids(0), self.kids(1)), (["A"], []))
+        self.assert_in_sync()
+
+    def test_expand_keeps_uncommitted_panel_text(self):
+        self.with_notes("x")
+        self.app.select(0)
+        self.app.note_text.insert("end", "y")
+        self.app.set_expanded(0, True)
+        self.assertEqual(self.app.checklist.items[0].note, "xy")
+        self.assertEqual(self.note(), "xy")
+        self.assertEqual(self.kids(0), ["xy"])
+        self.assertIs(self.app._note_item, self.app.checklist.items[0])
+
+    def test_long_note_wraps_within_column(self):
+        words = ["слово"] * 60
+        self.with_notes(" ".join(words))
+        self.app.set_expanded(0, True)
+        width = self.app._note_width()
+        lines = self.kids(0)
+        self.assertGreater(len(lines), 1)
+        for line in lines:
+            self.assertLessEqual(self.app._note_font.measure(line), width)
+        self.assertEqual(" ".join(lines).split(), words)
+
+    def test_long_word_is_cut(self):
+        word = "ж" * 400
+        self.with_notes(word)
+        self.app.set_expanded(0, True)
+        lines = self.kids(0)
+        self.assertGreater(len(lines), 1)
+        self.assertEqual("".join(lines), word)
+        width = self.app._note_width()
+        self.assertTrue(all(self.app._note_font.measure(s) <= width for s in lines))
+
+    def test_blank_lines_are_kept(self):
+        self.with_notes("a\n\nb")
+        self.app.set_expanded(0, True)
+        self.assertEqual(self.kids(0), ["a", "", "b"])
+
+    def test_note_line_is_never_selected(self):
+        self.with_notes("a", "")
+        self.app.set_expanded(0, True)
+        self.app.tree.selection_set("0.0")
+        self.top.update()
+        self.assertEqual(self.app.tree.selection(), ("0",))
+        self.assertEqual(self.app.selected_index(), 0)
+
+    def test_expand_all_and_collapse_all_from_view_menu(self):
+        self.with_notes("A", "", "C")
+        view = self.app.bar_menus["view"]
+        labels = [view.entrycget(i, "label") for i in range(view.index("end") + 1)]
+        view.invoke(labels.index("Развернуть все комментарии"))
+        self.assertEqual([it.expanded for it in self.app.checklist.items], [True, False, True])
+        self.assertEqual((self.kids(0), self.kids(2)), (["A"], ["C"]))
+        view.invoke(labels.index("Свернуть все комментарии"))
+        self.assertEqual((self.kids(0), self.kids(2)), ([], []))
+
+    def test_expanded_state_is_not_saved(self):
+        self.with_notes("A")
+        self.app.set_expanded(0, True)
+        self.fdm["asksaveasfilename"].return_value = self.p("e.json")
+        self.app.save()
+        self.app.open_path(self.p("e.json"))
+        self.assertEqual(self.kids(0), [])
+
+    def test_resize_rewraps(self):
+        self.with_notes(" ".join(["слово"] * 30))
+        self.app.set_expanded(0, True)
+        before = self.kids(0)
+        with unittest.mock.patch.object(self.app, "_note_width", return_value=2000):
+            self.app.refresh()
+        self.assertEqual(len(self.kids(0)), 1)
+        self.app.refresh()
+        self.assertEqual(self.kids(0), before)
+
+
 class NoteRandomOpsTests(NoteTestCase):
     """Random UI sequences; after each step the panel, tree and model must agree."""
 
@@ -243,6 +375,13 @@ class NoteRandomOpsTests(NoteTestCase):
             self.assertIs(app._note_item, app.checklist.items[sel], step)
             from checkprog.model import clean_note
             self.assertEqual(clean_note(self.note()), app.checklist.items[sel].note, step)
+        width = app._note_width()
+        for i, item in enumerate(app.checklist.items):
+            shown = app.tree.get_children(str(i))
+            expected = app._wrap_note(item.note, width) if item.expanded and item.note else ()
+            self.assertEqual(tuple(str(app.tree.item(k, "values")[0]) for k in shown),
+                             expected, step)
+            self.assertEqual(list(shown), [f"{i}.{k}" for k in range(len(expected))], step)
 
     def test_random_sequences(self):
         import random
@@ -253,7 +392,8 @@ class NoteRandomOpsTests(NoteTestCase):
             log = []
             for n in range(60):
                 op = rng.choice(["add", "select", "type", "type_raw", "delete", "move",
-                                 "drag", "toggle", "deselect", "rename", "theme"])
+                                 "drag", "toggle", "deselect", "rename", "theme",
+                                 "expand", "expand", "expand_all"])
                 size = len(self.app.checklist)
                 log.append(op)
                 if op == "add":
@@ -282,6 +422,10 @@ class NoteRandomOpsTests(NoteTestCase):
                     self.app.end_edit(True)
                 elif op == "theme":
                     self.app.set_theme_mode(rng.choice(["light", "dark"]))
+                elif op == "expand" and size:
+                    self.app.toggle_expanded(rng.randrange(size))
+                elif op == "expand_all":
+                    self.app.expand_all(rng.choice([True, False]))
                 self.top.update()
                 self.check(f"seed {seed}: {log}")
         self.app.set_theme_mode("light")
