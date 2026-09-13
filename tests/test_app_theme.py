@@ -202,15 +202,13 @@ class MenuKeyboardTests(ThemeTestCase):
         self.add("a")
         self.app.begin_edit(0)
         self.app.editor.entry.insert("end", "b")
-        with mock.patch.object(self.app.menu_buttons["file"], "event_generate"):
+        with mock.patch.object(self.app.menu_system, "open_bar"):
             self.app.open_menu("file")
         self.assertIsNone(self.app.editor)
         self.assertEqual(self.texts(), ["ab"])
 
     def test_theme_menu_items_switch_mode(self):
-        view_menu = self.app.menu_buttons["view"].cget("menu")
-        theme_menu = self.top.nametowidget(view_menu).entrycget(0, "menu")
-        submenu = self.top.nametowidget(theme_menu)
+        submenu = self.app.bar_menus["view"].entrycget(0, "menu")
         labels = [submenu.entrycget(i, "label") for i in range(submenu.index("end") + 1)]
         self.assertEqual(labels, [theme.MODE_LABELS[m] for m in theme.MODES])
         submenu.invoke(2)

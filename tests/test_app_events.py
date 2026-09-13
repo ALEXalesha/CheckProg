@@ -7,6 +7,7 @@ from unittest import mock
 from checkprog import app as app_module
 from checkprog.app import CHECK_COLUMN, App
 from checkprog.settings import Paths
+from tests.tkroot import shared_root
 
 
 class RealEventTests(unittest.TestCase):
@@ -15,14 +16,9 @@ class RealEventTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         try:
-            cls.root = tk.Tk()
+            cls.root = shared_root()
         except tk.TclError as e:
             raise unittest.SkipTest(f"no display: {e}")
-        cls.root.withdraw()
-
-    @classmethod
-    def tearDownClass(cls):
-        cls.root.destroy()
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()

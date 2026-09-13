@@ -6,6 +6,7 @@ from tkinter import filedialog, messagebox, ttk
 from tkinter import font as tkfont
 
 from checkprog import APP_NAME, __version__, theme
+from checkprog.flatmenu import FlatMenu, MenuSystem
 from checkprog.model import Checklist, ChecklistFormatError
 from checkprog.settings import load_settings, resolve_paths, save_settings
 
@@ -27,6 +28,11 @@ CONTROL_MASK = 0x0004
 ICON_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icon.ico")
 CHECK_COLUMN = "#0"
 NOTE_MARK = "✎"
+# Windows gives Tk 9 pt Segoe UI, which reads small. An absolute size (not +2)
+# keeps a second App on the same Tk from growing the fonts again.
+UI_FONT_SIZE = 11
+UI_FONTS = ("TkDefaultFont", "TkTextFont", "TkHeadingFont", "TkMenuFont",
+            "TkCaptionFont", "TkSmallCaptionFont", "TkIconFont", "TkTooltipFont")
 # Treeview item without the expand/collapse indicator, which would leave a gap
 # before the checkbox, and without Treeitem.focus, which drew a dotted frame
 # between the checkbox and the text. Layouts belong to a ttk theme, so this is
@@ -111,7 +117,12 @@ class App:
             except tk.TclError:
                 pass
 
-        base_font = tkfont.nametofont("TkDefaultFont")
+        for name in UI_FONTS:
+            try:
+                tkfont.nametofont(name, root=root).configure(size=UI_FONT_SIZE)
+            except tk.TclError:
+                pass  # not every platform defines every named font
+        base_font = tkfont.nametofont("TkDefaultFont", root=root)
         linespace = base_font.metrics("linespace")
         # Keep a reference: Tk deletes the named font when the Python object is collected.
         self._done_font = base_font.copy()
@@ -180,31 +191,36 @@ class App:
         self.tree.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="left", fill="y")
 
-        self.item_menu = self._new_menu(root)
+        self.item_menu = self._new_menu()
         self._fill_item_menu(self.item_menu)
         self.entry.focus_set()
 
-    def _new_menu(self, parent):
-        menu = tk.Menu(parent, tearoff=0)
+    def _new_menu(self, parent=None):
+        menu = FlatMenu(self.menu_system)
         self.menus.append(menu)
         return menu
 
     def _build_menu(self, scale):
-        # A native Windows menu bar ignores colors, so the bar is drawn with
-        # Menubuttons; their drop-down menus do follow the palette.
+        # Native Windows menus ignore colors and get a thick system frame, so both
+        # the bar and the drop-downs are drawn with plain Tk widgets (flatmenu.py).
+        self._menu_font = tkfont.nametofont("TkMenuFont", root=self.root).copy()
+        self.menu_system = MenuSystem(self.root, self._menu_font, scale)
+        self.menu_system.before_open = lambda: self.end_edit(True)
         self.menu_bar = tk.Frame(self.root, borderwidth=0, highlightthickness=0)
         self.menu_bar.pack(side="top", fill="x")
         self.menu_buttons = {}
+        self.bar_menus = {}
         self.menus = []
 
         def add(key, label):
-            button = tk.Menubutton(self.menu_bar, text=label, underline=0, relief="flat",
-                                   borderwidth=0, highlightthickness=0,
-                                   padx=round(8 * scale), pady=round(3 * scale))
-            menu = self._new_menu(button)
-            button.configure(menu=menu)
+            button = tk.Label(self.menu_bar, text=label, underline=0, font=self._menu_font,
+                              borderwidth=0, highlightthickness=0,
+                              padx=round(10 * scale), pady=round(4 * scale))
+            menu = self._new_menu()
             button.pack(side="left")
             self.menu_buttons[key] = button
+            self.bar_menus[key] = menu
+            self.menu_system.add_bar(key, button, menu)
             return menu
 
         file_menu = add("file", "Файл")
@@ -250,6 +266,9 @@ class App:
         tree.bind("<Button-3>", self._on_right_click)
         tree.bind("<<TreeviewSelect>>", lambda e: self._sync_note_panel())
         tree.bind("<Escape>", lambda e: self._key(self.deselect))
+        tree.bind("<Shift-F10>", self._on_menu_key)
+        if sys.platform == "win32":
+            tree.bind("<KeyPress-App>", self._on_menu_key)
         tree.bind("<space>", lambda e: self._key(self.toggle_selected))
         tree.bind("<Delete>", lambda e: self._key(self.delete_selected))
         tree.bind("<F2>", lambda e: self._key(self.edit_selected))
@@ -306,7 +325,8 @@ class App:
             menu.configure(background=palette.menu_bg, foreground=palette.menu_fg,
                            activebackground=palette.menu_active_bg,
                            activeforeground=palette.menu_active_fg,
-                           selectcolor=palette.menu_fg)
+                           selectcolor=palette.menu_fg, bordercolor=palette.border,
+                           acceleratorforeground=palette.muted)
         self.hint.configure(foreground=palette.muted)
         self.tree.tag_configure("done", foreground=palette.done_fg, font=self._done_font)
         self._palette = palette
@@ -679,10 +699,20 @@ class App:
             return
         self.end_edit(True)
         self.select(int(row))
-        try:
-            self.item_menu.tk_popup(event.x_root, event.y_root)
-        finally:
-            self.item_menu.grab_release()
+        self.tree.focus_set()
+        self.menu_system.popup(self.item_menu, event.x_root, event.y_root)
+
+    def _on_menu_key(self, event):
+        # The context-menu key or Shift+F10: open the item menu under the selected row.
+        index = self.selected_index()
+        if index is None:
+            return "break"
+        self.end_edit(True)
+        bbox = self.tree.bbox(str(index), "text") or (0, 0, 0, 0)
+        x = self.tree.winfo_rootx() + bbox[0] + 10
+        y = self.tree.winfo_rooty() + bbox[1] + bbox[3]
+        self.menu_system.popup(self.item_menu, x, y, keyboard=True)
+        return "break"
 
     # ---- keyboard ------------------------------------------------------------
 
@@ -726,7 +756,7 @@ class App:
 
     def open_menu(self, key):
         self.end_edit(True)
-        self.menu_buttons[key].event_generate("<<Invoke>>")
+        self.menu_system.open_bar(key, keyboard=True)
 
     # ---- files ---------------------------------------------------------------
 
