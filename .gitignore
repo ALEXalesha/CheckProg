@@ -6,3 +6,4 @@ dist/
 .remember/
 settings.json
 lists/
+.venv/
