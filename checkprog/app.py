@@ -37,7 +37,9 @@ VIEW_THEME_LABELS = {"system": "Тема как в системе", "light": "С
                      "dark": "Тёмная тема"}
 # Windows gives Tk 9 pt Segoe UI, which reads small. An absolute size (not +2)
 # keeps a second App on the same Tk from growing the fonts again.
-UI_FONT_SIZE = 11
+UI_FONT_SIZE = 10
+# Note lines keep their old wrapping for this long after the last resize step.
+REWRAP_DELAY_MS = 150
 UI_FONTS = ("TkDefaultFont", "TkTextFont", "TkHeadingFont", "TkMenuFont",
             "TkCaptionFont", "TkSmallCaptionFont", "TkIconFont", "TkTooltipFont")
 # Treeview item without the expand/collapse indicator, which would leave a gap
@@ -164,15 +166,17 @@ class App:
         self.entry = ttk.Entry(add_row)
         self.entry.pack(side="left", fill="x", expand=True)
         ttk.Button(add_row, text="Добавить", command=self.add_item).pack(side="left", padx=(6, 0))
-        self.hint = ttk.Label(
-            bottom,
+        # A plain tk.Label: a wrapped ttk.Label re-lays out its text on every redraw,
+        # which alone cost ~6 ms per frame while the window was being resized.
+        self.hint = tk.Label(
+            bottom, justify="left", anchor="w", borderwidth=0, highlightthickness=0,
+            padx=0, pady=0, font=base_font,
             text="Щелчок по квадратику: отметить  •  двойной щелчок: изменить  •  "
                  f"{NOTE_MARK} справа: показать комментарий  •  "
                  "повторный щелчок или Esc: снять выделение  •  "
                  "Delete: удалить  •  перетащите строку, чтобы переставить")
         self.hint.pack(fill="x", pady=(6, 0))
-        self.hint.bind("<Configure>",
-                       lambda e: self.hint.configure(wraplength=max(e.width, 50)))
+        self.hint.bind("<Configure>", self._on_hint_configure)
 
         # Packed after `bottom` with side="bottom", so it sits right above it.
         note_panel = ttk.Frame(root, padding=(10, 4, 10, 0))
@@ -354,7 +358,7 @@ class App:
                            activeforeground=palette.menu_active_fg,
                            selectcolor=palette.menu_fg, bordercolor=palette.border,
                            acceleratorforeground=palette.muted)
-        self.hint.configure(foreground=palette.muted)
+        self.hint.configure(foreground=palette.muted, background=palette.bg)
         self.tree.tag_configure("done", foreground=palette.done_fg, font=self._done_font)
         self.tree.tag_configure("noteline", foreground=palette.muted, font=self._note_font)
         self._palette = palette
@@ -422,7 +426,7 @@ class App:
             tree.delete(*existing[len(items):])  # their note lines go with them
             for iid in existing[len(items):]:
                 self._note_rows.pop(iid, None)
-        width = self._note_width()
+        width = self._wrap_width = self._note_width()
         for i, item in enumerate(items):
             iid = str(i)
             shown = bool(item.note) and item.expanded
@@ -557,9 +561,18 @@ class App:
         if width == self._wrap_width:
             return
         self._wrap_width = width
-        if self._rewrap_job is None and self._note_rows:
-            # after_idle: the column width settles only once the resize is laid out.
-            self._rewrap_job = self.root.after_idle(self._rewrap)
+        if not self._note_rows:
+            return
+        # Rebuilding every note line on each step of a window drag made resizing
+        # stutter; notes are rewrapped once the width has stopped changing.
+        if self._rewrap_job is not None:
+            self.root.after_cancel(self._rewrap_job)
+        self._rewrap_job = self.root.after(REWRAP_DELAY_MS, self._rewrap)
+
+    def _on_hint_configure(self, event):
+        width = max(event.width, 50)
+        if int(self.hint.cget("wraplength")) != width:
+            self.hint.configure(wraplength=width)
 
     def _rewrap(self):
         self._rewrap_job = None
