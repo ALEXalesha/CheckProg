@@ -31,3 +31,17 @@ def no_real_dialogs():
     yield
     for p in reversed(patches):
         p.stop()
+
+
+# ---- Qt ---------------------------------------------------------------------
+from PySide6.QtWidgets import QFileDialog, QMessageBox  # noqa: E402
+
+_QT_DIALOGS = {QMessageBox: ("question", "critical", "information", "warning"),
+               QFileDialog: ("getOpenFileName", "getSaveFileName")}
+
+
+@pytest.fixture(autouse=True)
+def no_real_qt_dialogs(monkeypatch):
+    for cls, names in _QT_DIALOGS.items():
+        for name in names:
+            monkeypatch.setattr(cls, name, staticmethod(_refuse(f"Qt {name}")))

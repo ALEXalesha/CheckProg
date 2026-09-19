@@ -32,6 +32,8 @@ class ItemDelegate(QStyledItemDelegate):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._wrap_cache = {}
+        self.current_editor = None  # the open inline editor, if any
+        self.closeEditor.connect(self._forget_editor)
 
     # ---- geometry -----------------------------------------------------------
 
@@ -182,7 +184,12 @@ class ItemDelegate(QStyledItemDelegate):
     def createEditor(self, parent, option, index):
         editor = QLineEdit(parent)
         editor.setFrame(True)
+        self.current_editor = editor
         return editor
+
+    def _forget_editor(self, editor, hint=None):
+        if editor is self.current_editor:
+            self.current_editor = None
 
     def setEditorData(self, editor, index):
         editor.setText(index.data(Qt.EditRole) or "")
