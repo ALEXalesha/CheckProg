@@ -407,3 +407,21 @@ def test_random_sequences(win):
                 click(win, rng.randrange(size), rng.choice(["check", "text"]))
                 QTest.qWait(QApplication.doubleClickInterval() + 10) if rng.random() < 0.1 else None
             check(win, f"seed {seed}: {log}")
+
+
+# ---- geometry ------------------------------------------------------------------
+
+def test_long_item_name_does_not_widen_minimum(win):
+    base = win.minimumSizeHint().width()
+    add(win, "очень длинное название пункта " * 3)
+    win.select(0)
+    QApplication.processEvents()
+    assert win.minimumSizeHint().width() <= max(base, 360)
+    win.resize(360, 420)
+    QApplication.processEvents()
+    assert win.width() <= 380
+
+
+def test_minimum_size_is_usable(win):
+    m = win.minimumSize()
+    assert 300 <= m.width() <= 400 and 300 <= m.height() <= 420

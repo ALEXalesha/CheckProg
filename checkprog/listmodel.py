@@ -1,4 +1,6 @@
 """Qt model over a Checklist: after loading, every change goes through here."""
+import html
+
 from PySide6.QtCore import QAbstractListModel, QModelIndex, Qt, Signal
 
 from checkprog.model import Checklist
@@ -45,7 +47,11 @@ class ChecklistModel(QAbstractListModel):
         if role == ItemRole:
             return item
         if role == Qt.ToolTipRole:
-            return item.note or None
+            # A collapsed note as a preview. Rich text, so Qt wraps long lines
+            # instead of drawing one strip across the screen.
+            if not item.note or item.expanded:
+                return None
+            return "<p>" + html.escape(item.note).replace("\n", "<br>") + "</p>"
         return None
 
     def flags(self, index):
@@ -103,7 +109,7 @@ class ChecklistModel(QAbstractListModel):
         old = self._cl.items[row]
         if not self._cl.set_note(row, text):
             return False
-        roles = [NoteRole, Qt.ToolTipRole, Qt.SizeHintRole]
+        roles = [NoteRole, Qt.ToolTipRole, Qt.SizeHintRole]  # tooltip follows the note
         if old.expanded and not self._cl.items[row].note:
             self._cl.set_expanded(row, False)  # nothing left to show
             roles.append(ExpandedRole)
@@ -115,7 +121,7 @@ class ChecklistModel(QAbstractListModel):
             return False
         if not self._cl.set_expanded(row, expanded):
             return False
-        self._row_changed(row, (ExpandedRole, Qt.SizeHintRole))
+        self._row_changed(row, (ExpandedRole, Qt.SizeHintRole, Qt.ToolTipRole))
         return True
 
     def expand_all(self, expanded):
@@ -126,7 +132,7 @@ class ChecklistModel(QAbstractListModel):
         if not changed:
             return False
         self.dataChanged.emit(self.index(changed[0]), self.index(changed[-1]),
-                              [ExpandedRole, Qt.SizeHintRole])
+                              [ExpandedRole, Qt.SizeHintRole, Qt.ToolTipRole])
         self.changed.emit()
         return True
 

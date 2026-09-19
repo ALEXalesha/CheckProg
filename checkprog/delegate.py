@@ -6,7 +6,7 @@ sizeHint() and hit() all use it, so what is drawn is exactly what is clickable.
 from typing import NamedTuple, Optional
 
 from PySide6.QtCore import QRect, QSize, Qt
-from PySide6.QtGui import QFont, QFontMetrics, QPalette, QTextLayout, QTextOption
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QPalette, QTextLayout, QTextOption
 from PySide6.QtWidgets import QLineEdit, QStyle, QStyledItemDelegate, QStyleOptionButton
 
 from checkprog import theme
@@ -139,6 +139,8 @@ class ItemDelegate(QStyledItemDelegate):
         opt.text = ""
         opt.features &= ~opt.ViewItemFeature.HasCheckIndicator
         style.drawPrimitive(QStyle.PE_PanelItemViewItem, opt, painter, widget)
+        if opt.state & QStyle.State_Selected:
+            self._paint_selection(painter, opt, lay)
 
         done = index.data(Qt.CheckStateRole) == Qt.Checked
         button = QStyleOptionButton()
@@ -178,6 +180,21 @@ class ItemDelegate(QStyledItemDelegate):
                                  Qt.AlignLeft | Qt.AlignVCenter | Qt.TextSingleLine, line)
                 y += spacing
         painter.restore()
+
+    @staticmethod
+    def _paint_selection(painter, opt, lay):
+        # windows11 marks a selected row so faintly that in the dark scheme it
+        # is hard to see; add a tint and an accent pill like Windows 11 lists.
+        accent = opt.palette.color(QPalette.Highlight)
+        tint = QColor(accent)
+        tint.setAlpha(70)
+        painter.fillRect(opt.rect, tint)
+        pill_h = max(8, lay.check.height() // 2)
+        pill = QRect(opt.rect.left() + 1, lay.check.top() + (lay.check.height() - pill_h) // 2,
+                     3, pill_h)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(accent)
+        painter.drawRoundedRect(pill, 1.5, 1.5)
 
     # ---- inline editor ------------------------------------------------------
 

@@ -63,8 +63,18 @@ def test_roles(model):
     assert model.data(ix, NoteRole) == "n"
     assert model.data(ix, ExpandedRole) is False
     assert model.data(ix, ItemRole) is model.checklist.items[0]
-    assert model.data(ix, Qt.ToolTipRole) == "n"
+    assert "n" in model.data(ix, Qt.ToolTipRole)
     assert model.data(model.index(5), Qt.DisplayRole) is None
+
+
+def test_tooltip_wraps_and_hides_when_expanded(model):
+    fill(model, "a", "b")
+    model.set_note(0, "длинный <текст> " * 40 + "\nвторая")
+    tip = model.data(model.index(0), Qt.ToolTipRole)
+    assert tip.startswith("<p") and "&lt;текст&gt;" in tip and "<br>" in tip  # rich text wraps
+    model.set_expanded(0, True)
+    assert model.data(model.index(0), Qt.ToolTipRole) is None  # already on screen
+    assert model.data(model.index(1), Qt.ToolTipRole) is None  # no note, no tooltip
 
 
 def test_toggle_emits_data_changed_for_one_row(model):

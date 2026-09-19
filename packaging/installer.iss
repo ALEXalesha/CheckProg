@@ -36,9 +36,14 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
 [Files]
-; No portable.flag here: the installed copy keeps settings in %APPDATA%.
-Source: "..\dist\{#AppExe}"; DestDir: "{app}"; Flags: ignoreversion
+; The whole PyInstaller folder (CheckProg.exe + _internal). No portable.flag here:
+; the installed copy keeps settings in %APPDATA%.
+Source: "..\dist\CheckProg\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion
+
+[InstallDelete]
+; 1.x was a single self-extracting exe; 2.x keeps its libraries in _internal.
+Type: filesandordirs; Name: "{app}\_internal"
 
 [Icons]
 Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#AppExe}"

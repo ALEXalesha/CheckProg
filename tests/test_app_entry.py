@@ -27,3 +27,16 @@ def test_module_imports_without_tkinter():
                          timeout=60)
     assert out.returncode == 0, out.stderr
     assert out.stdout.strip() == "False"
+
+
+def test_standard_buttons_are_russian(qapp):
+    from PySide6.QtCore import QCoreApplication
+    app_module.create_app()
+    assert QCoreApplication.translate("QPlatformTheme", "Save") == "Сохранить"
+    assert QCoreApplication.translate("QPlatformTheme", "Cancel") == "Отмена"
+
+
+def test_translator_installed_once(qapp):
+    app_module.create_app()
+    app_module.create_app()
+    assert len(app_module._translators) == 1

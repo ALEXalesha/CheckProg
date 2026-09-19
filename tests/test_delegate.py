@@ -184,3 +184,32 @@ def test_paint_draws_something_in_text_zone(setup, qapp):
     colors = {img.pixel(x, y) for x in range(lay.text.left(), lay.text.right())
               for y in range(lay.text.top(), lay.text.bottom())}
     assert len(colors) > 2  # glyphs, not an empty cell
+
+
+@pytest.mark.parametrize("mode", ["light", "dark"])
+def test_selected_row_is_clearly_marked(setup, qapp, mode):
+    model, d = setup
+    theme.apply_mode(qapp, mode)
+    qapp.processEvents()
+    try:
+        ix = model.index(0)
+        h = d.sizeHint(option(400), ix).height()
+
+        def render(selected):
+            img = QImage(400, h, QImage.Format_ARGB32)
+            img.fill(qapp.palette().base().color())
+            p = QPainter(img)
+            d.paint(p, option(400, height=h, selected=selected), ix)
+            p.end()
+            return img
+
+        plain, sel = render(False), render(True)
+        lay = d.layout(option(400, height=h), ix)
+        # an empty spot of the row (between text and arrow), and the left edge
+        for x, y in ((lay.text.right() - 3, 2), (1, h // 2)):
+            a, b = plain.pixelColor(x, y), sel.pixelColor(x, y)
+            diff = abs(a.red() - b.red()) + abs(a.green() - b.green()) + abs(a.blue() - b.blue())
+            assert diff >= 40, (mode, x, y, a.name(), b.name())
+    finally:
+        theme.apply_mode(qapp, "light")
+        qapp.processEvents()

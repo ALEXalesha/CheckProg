@@ -3,6 +3,7 @@ import os
 import sys
 import traceback
 
+from PySide6.QtCore import QLibraryInfo, QLocale, QTranslator
 from PySide6.QtGui import QFont, QIcon
 from PySide6.QtWidgets import QApplication, QMessageBox, QStyleFactory
 
@@ -13,6 +14,7 @@ from checkprog.window import MainWindow
 ICON_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icon.ico")
 UI_FONT_SIZE = 10
 STYLE = "windows11"  # Qt falls back to windowsvista on Windows 10 by itself
+_translators = []  # kept alive: Qt only holds a pointer
 
 
 def _report_error(exc, value, tb):
@@ -35,7 +37,20 @@ def create_app(argv=None):
     app.setFont(font)
     if os.path.isfile(ICON_PATH):
         app.setWindowIcon(QIcon(ICON_PATH))
+    _install_russian(app)
     return app
+
+
+def _install_russian(app):
+    # Standard buttons and file dialogs ("Save", "Cancel") come from Qt's own
+    # catalogue; the interface is Russian, so they must be too.
+    if _translators:
+        return
+    translator = QTranslator(app)
+    if translator.load(QLocale(QLocale.Russian), "qtbase", "_",
+                       QLibraryInfo.path(QLibraryInfo.TranslationsPath)):
+        app.installTranslator(translator)
+        _translators.append(translator)
 
 
 def main(argv=None):

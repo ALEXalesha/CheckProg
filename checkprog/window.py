@@ -7,7 +7,7 @@ from PySide6.QtGui import QAction, QActionGroup, QKeyEvent, QKeySequence
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QFileDialog, QHBoxLayout, QLabel, QLineEdit, QListView,
     QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QStyle,
-    QStyleOptionViewItem, QVBoxLayout, QWidget)
+    QSizePolicy, QStyleOptionViewItem, QVBoxLayout, QWidget)
 
 from checkprog import APP_NAME, __version__, theme
 from checkprog.delegate import ItemDelegate
@@ -229,6 +229,7 @@ class MainWindow(QMainWindow):
         self._keys = LayoutKeys(self)
         QApplication.instance().installEventFilter(self._keys)
         theme.apply_mode(QApplication.instance(), self.theme_mode)
+        self.setMinimumSize(340, 360)
         self.resize(560, 660)
         self._refresh_status()
         self._sync_note_panel()
@@ -264,6 +265,9 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.view, 1)
 
         self.note_label = QLabel()
+        # A long item name must not make the window's minimum width grow.
+        self.note_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.note_label.setMinimumWidth(1)
         self.note_edit = QPlainTextEdit()
         self.note_edit.setTabChangesFocus(True)
         line = self.note_edit.fontMetrics().lineSpacing()
