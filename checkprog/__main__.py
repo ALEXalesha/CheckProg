@@ -1,3 +1,5 @@
 from checkprog.app import main
 
-main()
+import sys
+
+sys.exit(main())

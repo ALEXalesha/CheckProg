@@ -38,3 +38,14 @@ def test_muted_is_between_text_and_base(qapp, mode):
     finally:
         theme.apply_mode(qapp, "light")
         qapp.processEvents()
+
+
+@pytest.mark.parametrize("value, expected", [
+    ("system", "system"), ("light", "light"), ("dark", "dark"), ("Dark", "system"),
+    ("", "system"), (None, "system"), (1, "system"), (["dark"], "system")])
+def test_normalize_mode(value, expected):
+    assert theme.normalize_mode(value) == expected
+
+
+def test_every_mode_has_a_label():
+    assert set(theme.MODE_LABELS) == set(theme.MODES)

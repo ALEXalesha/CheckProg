@@ -27,8 +27,8 @@ _SURROGATES = {cp: None for cp in range(0xD800, 0xE000)}
 def clean_text(text):
     if not isinstance(text, str):
         raise TypeError("text must be a string")
-    # Tk 8.6 stores emoji as two UTF-16 halves; deleting one half leaves surrogate
-    # code points that cannot be encoded as UTF-8 when saving.
+    # Lists edited in CheckProg 1.x (Tk 8.6 stored emoji as two UTF-16 halves) and
+    # some pasted text hold lone surrogate halves, which cannot be saved as UTF-8.
     text = text.translate(_SURROGATES)
     return " ".join(text.splitlines()).replace("\t", " ").strip()
 
