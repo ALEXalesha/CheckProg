@@ -360,9 +360,9 @@ class MainWindow(QMainWindow):
         self.model.changed.connect(self._refresh_status)
         self.view.selectionModel().selectionChanged.connect(self._on_selection_changed)
         self.model.rowsMoved.connect(lambda *a: self._update_item_actions())
-        self.model.modelReset.connect(self._sync_note_panel)
+        self.model.modelReset.connect(self._on_selection_changed)
         self.model.dataChanged.connect(self._on_data_changed)
-        self.model.rowsRemoved.connect(lambda *a: self._sync_note_panel())
+        self.model.rowsRemoved.connect(self._on_selection_changed)
         self.view.check_clicked.connect(self._on_check_clicked)
         self.view.arrow_clicked.connect(self.toggle_expanded)
         self.view.text_double_clicked.connect(self.begin_edit)
@@ -511,25 +511,32 @@ class MainWindow(QMainWindow):
                 item = self.model.checklist.items[row]
                 self.note_edit.setEnabled(True)
                 self.note_edit.setPlainText(item.note)  # also clears the undo history
-                short = item.text if len(item.text) <= 40 else item.text[:39] + "…"
-                self.note_label.setText(f"Комментарий к «{short}»:")
+                self.note_label.setText(self._note_title(item))
         finally:
             self._loading_note = False
 
     def _on_data_changed(self, top, bottom, roles=()):
         # Keeps the panel equal to the note if it was changed some other way;
         # our own typing compares equal after cleaning, so the cursor stays put.
-        if roles and NoteRole not in roles:
-            return
         if not self._note_index.isValid() or not top.row() <= self._note_index.row() <= bottom.row():
             return
-        note = self.model.checklist.items[self._note_index.row()].note
+        item = self.model.checklist.items[self._note_index.row()]
+        if not roles or Qt.DisplayRole in roles:
+            self.note_label.setText(self._note_title(item))
+        if roles and NoteRole not in roles:
+            return
+        note = item.note
         if clean_note(self.note_edit.toPlainText()) != note:
             self._loading_note = True
             try:
                 self.note_edit.setPlainText(note)
             finally:
                 self._loading_note = False
+
+    @staticmethod
+    def _note_title(item):
+        short = item.text if len(item.text) <= 40 else item.text[:39] + "…"
+        return f"Комментарий к «{short}»:"
 
     def _on_note_changed(self):
         if self._loading_note or not self._note_index.isValid():

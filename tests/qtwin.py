@@ -122,6 +122,7 @@ def assert_in_sync(win):
         assert win.note_edit.isEnabled()
         assert clean_note(win.note_edit.toPlainText()) == cl.items[sel].note
         assert win.act_delete.isEnabled()
+        assert win.note_label.text() == win._note_title(cl.items[sel])
     for r in range(win.model.rowCount()):
         item = cl.items[r]
         assert not (item.expanded and not item.note)
