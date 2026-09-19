@@ -7,7 +7,7 @@ from PySide6.QtGui import QAction, QActionGroup, QKeyEvent, QKeySequence
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QFileDialog, QHBoxLayout, QLabel, QLineEdit, QListView,
     QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QStyle,
-    QSizePolicy, QStyleOptionViewItem, QVBoxLayout, QWidget)
+    QStyleOptionViewItem, QVBoxLayout, QWidget)
 
 from checkprog import APP_NAME, __version__, theme
 from checkprog.delegate import ItemDelegate
@@ -265,8 +265,8 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.view, 1)
 
         self.note_label = QLabel()
-        # A long item name must not make the window's minimum width grow.
-        self.note_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        # A long item name must not make the window's minimum width grow: an
+        # explicit minimum replaces the label's text-wide minimum size hint.
         self.note_label.setMinimumWidth(1)
         self.note_edit = QPlainTextEdit()
         self.note_edit.setTabChangesFocus(True)
@@ -333,6 +333,8 @@ class MainWindow(QMainWindow):
             self.theme_group.addAction(act)
             self.theme_actions[mode] = act
         self.act_help = a("Как пользоваться", self.show_help, "F1")
+        # F10 opens the menu bar like in Windows apps (Alt alone does it too).
+        self.act_menu_key = a("Меню", lambda: self.open_menu("file"), "F10")
         self.act_about = a("О программе", self.show_about)
 
     def _build_menus(self):

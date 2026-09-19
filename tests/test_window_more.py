@@ -417,11 +417,35 @@ def test_long_item_name_does_not_widen_minimum(win):
     win.select(0)
     QApplication.processEvents()
     assert win.minimumSizeHint().width() <= max(base, 360)
-    win.resize(360, 420)
+    win.centralWidget().layout().activate()
+    win.resize(340, 420)
     QApplication.processEvents()
-    assert win.width() <= 380
+    assert win.width() <= 345, win.width()
 
 
 def test_minimum_size_is_usable(win):
     m = win.minimumSize()
     assert 300 <= m.width() <= 400 and 300 <= m.height() <= 420
+
+
+def test_f10_opens_file_menu(win):
+    opened = []
+    win.open_menu = opened.append
+    win.act_menu_key.trigger()
+    assert opened == ["file"]
+    assert win.act_menu_key.shortcut().toString() == "F10"
+
+
+def test_removing_another_row_keeps_panel_undo_and_cursor(win):
+    add(win, "a", "b", "c")
+    win.select(2)
+    type_note(win, "раз")
+    type_note(win, " два")
+    cursor_before = win.note_edit.textCursor().position()
+    win.model.remove(0)  # another row goes away: the panel's item only shifts up
+    assert win.selected_row() == 1
+    assert win.note_edit.textCursor().position() == cursor_before
+    assert win.note_edit.document().isUndoAvailable()  # history survived
+    win.note_edit.undo()  # Qt merges the two typed runs into one step
+    assert win.note_edit.toPlainText() == ""
+    assert win.model.checklist.items[1].note == ""
