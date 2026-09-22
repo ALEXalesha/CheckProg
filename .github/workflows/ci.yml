@@ -1,0 +1,34 @@
+# Проверки на каждый пуш.
+#
+# Раннер windows: окно на Qt под Windows, и три проверки требуют именно настоящую
+# платформу Qt - две читают палитру системной темы, одна рисует строку и смотрит, легли
+# ли чернила в текстовую зону. Под QT_QPA_PLATFORM=offscreen эти три падают, поэтому
+# переменная здесь не ставится: окна и так создаются скрытыми.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  tests:
+    name: Проверки
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Зависимости
+        run: pip install -r requirements-dev.txt
+
+      - name: 202 проверки
+        run: python -m pytest -q
