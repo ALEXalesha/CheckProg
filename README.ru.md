@@ -1,4 +1,18 @@
+<div align="center">
+
 # CheckProg
+
+**Чек-лист для Windows: список с галочками, комментарий к каждому пункту, тёмная тема. Каждый список - отдельный файл `.json`.**
+
+[Скачать для Windows](https://github.com/ALEXalesha/CheckProg/releases/latest) &nbsp;·&nbsp; [English version of this file](README.md)
+
+[![CI](https://github.com/ALEXalesha/CheckProg/actions/workflows/ci.yml/badge.svg)](https://github.com/ALEXalesha/CheckProg/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/ALEXalesha/CheckProg?color=16a34a)](https://github.com/ALEXalesha/CheckProg/releases/latest)
+[![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+
+<img src="docs/screenshots/window-light.png" width="620" alt="Окно CheckProg">
+
+</div>
 
 Простая программа-чек-лист для Windows 10 и 11. Впишите названия пунктов и отмечайте галочкой то, что уже сделано. Каждый список хранится в отдельном файле `.json`, так что можно держать разные списки: покупки, дела на неделю, вещи в поездку.
 
@@ -146,7 +160,7 @@ python -m venv .venv
 
 ```bash
 winget install JRSoftware.InnoSetup
-powershell -ExecutionPolicy Bypass -File packaginguild.ps1
+powershell -ExecutionPolicy Bypass -File packaging\build.ps1
 ```
 
 Результат появляется в папке `dist`: `CheckProg\` (готовая папка программы), `CheckProg-<версия>-Portable.zip` и `CheckProg-<версия>-Setup.exe`. Если Inno Setup не найден, скрипт соберёт только portable-архив.
@@ -175,3 +189,11 @@ docs/superpowers/  спецификации и планы разработки
 Версия программы задаётся в `checkprog/__init__.py`. Сборка берёт её оттуда и подставляет в имена файлов и в установщик.
 
 До версии 2.0 окно было на Tkinter. Его заменили на Qt, потому что Tk на Windows заметно тормозил при изменении размера окна (подробности в `docs/superpowers/specs/2026-09-19-resize-performance.md` и `2026-09-19-qt-port-design.md`).
+
+## Скриншоты собираются программой
+
+`tools/make_screenshots.py` создаёт временный список, открывает его в настоящем окне и снимает виджет через `QWidget.grab()` - в светлой и в тёмной теме. Снимок области экрана не годится: окно может оказаться позади других, и в кадр попадёт чужое содержимое. Настройки при этом берутся во временную папку, так что `settings.json` и «последний открытый файл» у автора не меняются.
+
+## Лицензия
+
+MIT, файл [LICENSE](LICENSE).
