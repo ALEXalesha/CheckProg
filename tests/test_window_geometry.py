@@ -13,8 +13,11 @@ def _main_area():
 
 
 def test_a_window_comes_back_where_and_how_large_it_was(qtbot, tmp_path):
-    area = _main_area()
     win = make_window(qtbot, tmp_path)
+    # Экран самого окна, а не основной: скрытое окно (WA_DontShowOnScreen) не узнаёт,
+    # что его передвинули на другой монитор, и Qt при восстановлении вернул бы его на
+    # «свой». С двумя мониторами итог зависел от того, где стояла мышь.
+    area = win.screen().availableGeometry()
     want = QRect(area.x() + 40, area.y() + 60, 700, 480)
     win.setGeometry(want)
     close_quietly(win)
