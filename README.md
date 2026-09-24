@@ -37,7 +37,7 @@ A checklist that behaves like Notepad: one list is one file, `Ctrl+S` saves it, 
 | `CheckProg-<version>-Setup.exe` | Installer. Per-user install needs no admin rights |
 | `CheckProg-<version>-Portable.zip` | Unpack anywhere, including a flash drive, and run `CheckProg.exe` |
 
-Windows 10 or 11. The portable build keeps everything next to itself: while `portable.flag` is there, settings live in `settings.json` and lists are offered in a `lists` folder beside the program. An installed copy uses `%APPDATA%\CheckProg\settings.json` and `Documents\CheckProg`.
+Windows 10 or 11. The portable build keeps everything next to itself: while `portable.flag` is there, settings live in `settings.json` and lists are offered in a `lists` folder beside the program. An installed copy uses `%APPDATA%\CheckProg\settings.json` and `Documents\CheckProg`. The window opens where and how large it was closed, maximized too (since 2.1.0); if that monitor is gone or the saved value is damaged, it opens at the default size.
 
 ## File format
 
@@ -73,7 +73,7 @@ python -m venv .venv
 .venv\Scripts\python -m pytest -q
 ```
 
-202 tests, about 8 seconds. They run against real windows, created and closed by the test itself.
+206 tests, about 8 seconds. They run against real windows, created and closed by the test itself.
 
 The parts worth copying:
 

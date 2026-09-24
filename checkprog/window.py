@@ -13,6 +13,7 @@ from checkprog import APP_NAME, __version__, theme
 from checkprog.delegate import ItemDelegate
 from checkprog.listmodel import ChecklistModel, NoteRole
 from checkprog.model import Checklist, ChecklistFormatError, clean_note
+from checkprog import window_geometry
 from checkprog.settings import load_settings, save_settings
 
 UNTITLED = "Без имени"
@@ -231,6 +232,8 @@ class MainWindow(QMainWindow):
         theme.apply_mode(QApplication.instance(), self.theme_mode)
         self.setMinimumSize(340, 360)
         self.resize(560, 660)
+        # Окно открывается там и такого размера, где его закрыли (2.1.0).
+        window_geometry.restore(self, self.settings.get("window"))
         self._refresh_status()
         self._sync_note_panel()
         self._update_item_actions()
@@ -736,6 +739,8 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         if self._confirm_discard():
             QApplication.instance().removeEventFilter(self._keys)
+            self.settings["window"] = window_geometry.encode(self)
+            save_settings(self.paths.settings_file, self.settings)
             event.accept()
         else:
             event.ignore()
